@@ -3,6 +3,10 @@ import { PROVIDERS } from "../shared/providers.js";
 const providerList = document.querySelector("#provider-list");
 const currentPage = document.querySelector("#current-page");
 const refreshButton = document.querySelector("#refresh-button");
+const chatgptForm = document.querySelector("#chatgpt-form");
+const chatgptPrompt = document.querySelector("#chatgpt-prompt");
+const sendChatGPTButton = document.querySelector("#send-chatgpt-button");
+const chatgptResult = document.querySelector("#chatgpt-result");
 
 function statusLabel(status) {
   const labels = {
@@ -38,8 +42,8 @@ function renderError(error) {
 function renderSnapshot(snapshot) {
   const activeProviderName = snapshot.activeTab?.providerName;
   currentPage.textContent = activeProviderName
-    ? `当前页面：${activeProviderName}`
-    : "当前页面：未支持页面";
+    ? `当前标签页：${activeProviderName}`
+    : "当前标签页：非模型页面";
 
   providerList.innerHTML = snapshot.providers
     .map(
@@ -71,5 +75,80 @@ async function refreshStatus() {
   renderSnapshot(response.snapshot);
 }
 
+async function restoreLastChatGPTResult() {
+  const stored = await chrome.storage.local.get("lastChatGPTResult");
+  const last = stored.lastChatGPTResult;
+
+  if (!last) {
+    return;
+  }
+
+  if (last.status === "success") {
+    setChatGPTResult(last.message, "success");
+    return;
+  }
+
+  if (last.status === "failure") {
+    const stageText = last.result?.stage ? `\n阶段：${last.result.stage}` : "";
+    setChatGPTResult(`${last.message}${stageText}`, "failure");
+    return;
+  }
+
+  if (last.status === "running") {
+    setChatGPTResult(last.message, "");
+  }
+}
+
+function setChatGPTResult(message, type = "") {
+  chatgptResult.textContent = message;
+  chatgptResult.className = `result ${type}`.trim();
+}
+
+async function sendToChatGPT(event) {
+  event.preventDefault();
+
+  const prompt = chatgptPrompt.value.trim();
+
+  if (!prompt) {
+    setChatGPTResult("请输入要发送的内容", "failure");
+    return;
+  }
+
+  sendChatGPTButton.disabled = true;
+  setChatGPTResult("正在发送到 ChatGPT，并等待回复...", "");
+
+  let response;
+
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "HAI_MEETING_SEND_CHATGPT_PROMPT",
+      prompt
+    });
+  } catch (error) {
+    sendChatGPTButton.disabled = false;
+    setChatGPTResult(
+      `发送失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`,
+      "failure"
+    );
+    return;
+  }
+
+  sendChatGPTButton.disabled = false;
+
+  if (!response?.ok) {
+    const errorText = response?.error || "发送失败：插件后台没有返回具体原因";
+    const stageText = response?.stage ? `\n阶段：${response.stage}` : "";
+    const detailText = response?.detail ? `\n细节：${JSON.stringify(response.detail)}` : "";
+    setChatGPTResult(`${errorText}${stageText}${detailText}`, "failure");
+    await refreshStatus();
+    return;
+  }
+
+  setChatGPTResult(response.text, "success");
+  await refreshStatus();
+}
+
 refreshButton.addEventListener("click", refreshStatus);
+chatgptForm.addEventListener("submit", sendToChatGPT);
 refreshStatus();
+restoreLastChatGPTResult();

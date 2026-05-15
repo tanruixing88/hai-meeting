@@ -11,7 +11,7 @@
 
 body {
   width: 360px;
-  min-height: 420px;
+  min-height: 560px;
   margin: 0;
   background: #f6f7f4;
 }
@@ -53,7 +53,7 @@ p {
   color: #5e6a72;
 }
 
-button {
+#refresh-button {
   display: inline-grid;
   width: 34px;
   height: 34px;
@@ -66,7 +66,7 @@ button {
   font-size: 17px;
 }
 
-button:hover {
+#refresh-button:hover {
   background: #eef4ec;
 }
 
@@ -149,4 +149,79 @@ button:hover {
   color: #5f2934;
   background: #fff0f2;
   font-size: 12px;
+}
+
+.prompt-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+textarea {
+  width: 100%;
+  min-height: 116px;
+  resize: vertical;
+  border: 1px solid #c5cec1;
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #172026;
+  background: #ffffff;
+}
+
+textarea:focus {
+  outline: 2px solid #9fd4b3;
+  outline-offset: 1px;
+}
+
+.primary-button {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #1f6f43;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #237a4b;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.primary-button:hover {
+  background: #1f6f43;
+}
+
+.primary-button:disabled {
+  cursor: not-allowed;
+  border-color: #aab4a7;
+  background: #aab4a7;
+}
+
+.result {
+  margin-top: 10px;
+  min-height: 68px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid #e0e5dc;
+  border-radius: 8px;
+  padding: 10px;
+  color: #42505a;
+  background: #fbfcfa;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.result.success {
+  color: #173d28;
+  border-color: #9fd4b3;
+  background: #f0fbf4;
+}
+
+.result.failure {
+  color: #5f2934;
+  border-color: #e5b4bd;
+  background: #fff0f2;
 }

@@ -21,9 +21,17 @@
         <div id="provider-list" class="provider-list"></div>
       </section>
 
-      <section class="panel muted">
-        <h2>下一步能力</h2>
-        <p>本版本先完成页面识别和通信链路。自动填写、发送和读取回复会在下一阶段接入。</p>
+      <section class="panel" aria-labelledby="chatgpt-run-title">
+        <h2 id="chatgpt-run-title">ChatGPT 单模型测试</h2>
+        <form id="chatgpt-form" class="prompt-form">
+          <textarea
+            id="chatgpt-prompt"
+            rows="5"
+            placeholder="输入要发送给 ChatGPT 的内容"
+          ></textarea>
+          <button id="send-chatgpt-button" class="primary-button" type="submit">发送到 ChatGPT</button>
+        </form>
+        <div id="chatgpt-result" class="result" aria-live="polite">等待发送</div>
       </section>
     </main>
 

@@ -64,6 +64,34 @@
         inputSelectorHint: selector,
         matchedInputCount: candidates.length
       };
+    },
+
+    sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    },
+
+    waitFor(condition, { timeoutMs = 10000, intervalMs = 150 } = {}) {
+      const start = Date.now();
+
+      return new Promise((resolve, reject) => {
+        const tick = () => {
+          const result = condition();
+
+          if (result) {
+            resolve(result);
+            return;
+          }
+
+          if (Date.now() - start >= timeoutMs) {
+            reject(new Error("等待页面元素超时"));
+            return;
+          }
+
+          setTimeout(tick, intervalMs);
+        };
+
+        tick();
+      });
     }
   };
 
