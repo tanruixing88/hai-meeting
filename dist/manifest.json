@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "HAI Meeting",
+  "description": "AI meeting helper for ChatGPT, Gemini, and DeepSeek web pages.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "HAI Meeting",
+    "default_popup": "src/popup/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "permissions": ["tabs", "storage", "scripting"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["src/content/common.js", "src/content/chatgpt.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["src/content/common.js", "src/content/gemini.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chat.deepseek.com/*"],
+      "js": ["src/content/common.js", "src/content/deepseek.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

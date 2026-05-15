@@ -1,0 +1,10 @@
+{
+  "name": "hai-meeting",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension MVP for AI meeting workflows across ChatGPT, Gemini, and DeepSeek pages.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js"
+  }
+}

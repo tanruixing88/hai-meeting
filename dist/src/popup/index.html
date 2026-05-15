@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HAI Meeting</title>
+    <link rel="stylesheet" href="./popup.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <div>
+          <h1>HAI Meeting</h1>
+          <p id="current-page">正在检测当前页面...</p>
+        </div>
+        <button id="refresh-button" type="button" title="刷新状态" aria-label="刷新状态">↻</button>
+      </header>
+
+      <section class="panel" aria-labelledby="provider-status-title">
+        <h2 id="provider-status-title">模型页面状态</h2>
+        <div id="provider-list" class="provider-list"></div>
+      </section>
+
+      <section class="panel muted">
+        <h2>下一步能力</h2>
+        <p>本版本先完成页面识别和通信链路。自动填写、发送和读取回复会在下一阶段接入。</p>
+      </section>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>
