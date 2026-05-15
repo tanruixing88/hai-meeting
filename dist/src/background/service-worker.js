@@ -147,7 +147,13 @@ async function findReadyProviderTab(providerId) {
   const matchingTabs = tabs.filter((tab) => getProviderByUrl(tab.url)?.id === providerId);
 
   if (!provider || matchingTabs.length === 0) {
-    const providerName = providerId === "chatgpt" ? "ChatGPT" : providerId === "gemini" ? "Gemini" : "模型";
+    const providerName = providerId === "chatgpt"
+      ? "ChatGPT"
+      : providerId === "gemini"
+        ? "Gemini"
+        : providerId === "deepseek"
+          ? "DeepSeek"
+          : "模型";
     return {
       ok: false,
       error: `请先打开并登录 ${providerName} 页面`
@@ -181,7 +187,9 @@ async function findReadyProviderTab(providerId) {
       ? "请先打开并登录 ChatGPT 页面，确认输入框可用"
       : providerId === "gemini"
         ? "请先打开并登录 Gemini 页面，确认输入框可用"
-        : "模型页面未就绪"
+        : providerId === "deepseek"
+          ? "请先打开并登录 DeepSeek 页面，确认输入框可用"
+          : "模型页面未就绪"
   };
 }
 
@@ -288,6 +296,16 @@ async function sendPromptToGemini(prompt) {
   });
 }
 
+async function sendPromptToDeepSeek(prompt) {
+  return sendPromptToProvider({
+    providerId: "deepseek",
+    providerName: "DeepSeek",
+    storageKey: "lastDeepSeekResult",
+    messageType: "HAI_MEETING_DEEPSEEK_SEND_PROMPT",
+    prompt
+  });
+}
+
 async function getStatusSnapshot() {
   const [tabs, activeTab] = await Promise.all([queryTabs(), getActiveTab()]);
   const currentProvider = getProviderByUrl(activeTab?.url);
@@ -338,6 +356,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "HAI_MEETING_SEND_GEMINI_PROMPT") {
     sendPromptToGemini(message.prompt)
+      .then((result) => sendResponse(result))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "HAI_MEETING_SEND_DEEPSEEK_PROMPT") {
+    sendPromptToDeepSeek(message.prompt)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({

@@ -11,6 +11,10 @@ const geminiForm = document.querySelector("#gemini-form");
 const geminiPrompt = document.querySelector("#gemini-prompt");
 const sendGeminiButton = document.querySelector("#send-gemini-button");
 const geminiResult = document.querySelector("#gemini-result");
+const deepseekForm = document.querySelector("#deepseek-form");
+const deepseekPrompt = document.querySelector("#deepseek-prompt");
+const sendDeepSeekButton = document.querySelector("#send-deepseek-button");
+const deepseekResult = document.querySelector("#deepseek-result");
 
 function statusLabel(status) {
   const labels = {
@@ -87,6 +91,10 @@ async function restoreLastGeminiResult() {
   await restoreLastProviderResult("lastGeminiResult", setGeminiResult);
 }
 
+async function restoreLastDeepSeekResult() {
+  await restoreLastProviderResult("lastDeepSeekResult", setDeepSeekResult);
+}
+
 async function restoreLastProviderResult(storageKey, setResult) {
   const stored = await chrome.storage.local.get(storageKey);
   const last = stored[storageKey];
@@ -119,6 +127,11 @@ function setChatGPTResult(message, type = "") {
 function setGeminiResult(message, type = "") {
   geminiResult.textContent = message;
   geminiResult.className = `result ${type}`.trim();
+}
+
+function setDeepSeekResult(message, type = "") {
+  deepseekResult.textContent = message;
+  deepseekResult.className = `result ${type}`.trim();
 }
 
 async function sendToProvider({
@@ -194,9 +207,22 @@ async function sendToGemini(event) {
   });
 }
 
+async function sendToDeepSeek(event) {
+  return sendToProvider({
+    event,
+    promptElement: deepseekPrompt,
+    sendButton: sendDeepSeekButton,
+    setResult: setDeepSeekResult,
+    messageType: "HAI_MEETING_SEND_DEEPSEEK_PROMPT",
+    providerName: "DeepSeek"
+  });
+}
+
 refreshButton.addEventListener("click", refreshStatus);
 chatgptForm.addEventListener("submit", sendToChatGPT);
 geminiForm.addEventListener("submit", sendToGemini);
+deepseekForm.addEventListener("submit", sendToDeepSeek);
 refreshStatus();
 restoreLastChatGPTResult();
 restoreLastGeminiResult();
+restoreLastDeepSeekResult();
