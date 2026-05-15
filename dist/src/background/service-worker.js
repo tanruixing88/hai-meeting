@@ -147,9 +147,10 @@ async function findReadyProviderTab(providerId) {
   const matchingTabs = tabs.filter((tab) => getProviderByUrl(tab.url)?.id === providerId);
 
   if (!provider || matchingTabs.length === 0) {
+    const providerName = providerId === "chatgpt" ? "ChatGPT" : providerId === "gemini" ? "Gemini" : "模型";
     return {
       ok: false,
-      error: providerId === "chatgpt" ? "请先打开并登录 ChatGPT 页面" : "请先打开模型页面"
+      error: `请先打开并登录 ${providerName} 页面`
     };
   }
 
@@ -178,11 +179,13 @@ async function findReadyProviderTab(providerId) {
     ok: false,
     error: providerId === "chatgpt"
       ? "请先打开并登录 ChatGPT 页面，确认输入框可用"
-      : "模型页面未就绪"
+      : providerId === "gemini"
+        ? "请先打开并登录 Gemini 页面，确认输入框可用"
+        : "模型页面未就绪"
   };
 }
 
-async function sendPromptToChatGPT(prompt) {
+async function sendPromptToProvider({ providerId, providerName, storageKey, messageType, prompt }) {
   const text = prompt?.trim();
 
   if (!text) {
@@ -193,19 +196,19 @@ async function sendPromptToChatGPT(prompt) {
   }
 
   await chrome.storage.local.set({
-    lastChatGPTResult: {
+    [storageKey]: {
       status: "running",
       prompt: text,
       updatedAt: new Date().toISOString(),
-      message: "正在发送到 ChatGPT，并等待回复..."
+      message: `正在发送到 ${providerName}，并等待回复...`
     }
   });
 
-  const readyTab = await findReadyProviderTab("chatgpt");
+  const readyTab = await findReadyProviderTab(providerId);
 
   if (!readyTab.ok) {
     await chrome.storage.local.set({
-      lastChatGPTResult: {
+      [storageKey]: {
         status: "failure",
         prompt: text,
         updatedAt: new Date().toISOString(),
@@ -217,7 +220,7 @@ async function sendPromptToChatGPT(prompt) {
   }
 
   const response = await sendTabMessage(readyTab.tab.id, {
-    type: "HAI_MEETING_CHATGPT_SEND_PROMPT",
+    type: messageType,
     prompt: text,
     timeoutMs: 120000
   });
@@ -225,13 +228,13 @@ async function sendPromptToChatGPT(prompt) {
   if (!response?.ok) {
     const result = {
       ok: false,
-      error: response?.error || "ChatGPT 执行失败，但页面脚本未返回具体原因",
-      stage: response?.stage || "chatgpt_content",
+      error: response?.error || `${providerName} 执行失败，但页面脚本未返回具体原因`,
+      stage: response?.stage || `${providerId}_content`,
       detail: response
     };
 
     await chrome.storage.local.set({
-      lastChatGPTResult: {
+      [storageKey]: {
         status: "failure",
         prompt: text,
         updatedAt: new Date().toISOString(),
@@ -245,15 +248,15 @@ async function sendPromptToChatGPT(prompt) {
 
   const result = {
     ok: true,
-    providerId: "chatgpt",
-    providerName: "ChatGPT",
+    providerId,
+    providerName,
     tabId: readyTab.tab.id,
     title: readyTab.tab.title,
     text: response.text
   };
 
   await chrome.storage.local.set({
-    lastChatGPTResult: {
+    [storageKey]: {
       status: "success",
       prompt: text,
       updatedAt: new Date().toISOString(),
@@ -263,6 +266,26 @@ async function sendPromptToChatGPT(prompt) {
   });
 
   return result;
+}
+
+async function sendPromptToChatGPT(prompt) {
+  return sendPromptToProvider({
+    providerId: "chatgpt",
+    providerName: "ChatGPT",
+    storageKey: "lastChatGPTResult",
+    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT",
+    prompt
+  });
+}
+
+async function sendPromptToGemini(prompt) {
+  return sendPromptToProvider({
+    providerId: "gemini",
+    providerName: "Gemini",
+    storageKey: "lastGeminiResult",
+    messageType: "HAI_MEETING_GEMINI_SEND_PROMPT",
+    prompt
+  });
 }
 
 async function getStatusSnapshot() {
@@ -302,6 +325,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "HAI_MEETING_SEND_CHATGPT_PROMPT") {
     sendPromptToChatGPT(message.prompt)
+      .then((result) => sendResponse(result))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "HAI_MEETING_SEND_GEMINI_PROMPT") {
+    sendPromptToGemini(message.prompt)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({

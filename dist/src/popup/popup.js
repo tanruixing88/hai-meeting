@@ -7,6 +7,10 @@ const chatgptForm = document.querySelector("#chatgpt-form");
 const chatgptPrompt = document.querySelector("#chatgpt-prompt");
 const sendChatGPTButton = document.querySelector("#send-chatgpt-button");
 const chatgptResult = document.querySelector("#chatgpt-result");
+const geminiForm = document.querySelector("#gemini-form");
+const geminiPrompt = document.querySelector("#gemini-prompt");
+const sendGeminiButton = document.querySelector("#send-gemini-button");
+const geminiResult = document.querySelector("#gemini-result");
 
 function statusLabel(status) {
   const labels = {
@@ -76,26 +80,34 @@ async function refreshStatus() {
 }
 
 async function restoreLastChatGPTResult() {
-  const stored = await chrome.storage.local.get("lastChatGPTResult");
-  const last = stored.lastChatGPTResult;
+  await restoreLastProviderResult("lastChatGPTResult", setChatGPTResult);
+}
+
+async function restoreLastGeminiResult() {
+  await restoreLastProviderResult("lastGeminiResult", setGeminiResult);
+}
+
+async function restoreLastProviderResult(storageKey, setResult) {
+  const stored = await chrome.storage.local.get(storageKey);
+  const last = stored[storageKey];
 
   if (!last) {
     return;
   }
 
   if (last.status === "success") {
-    setChatGPTResult(last.message, "success");
+    setResult(last.message, "success");
     return;
   }
 
   if (last.status === "failure") {
     const stageText = last.result?.stage ? `\n阶段：${last.result.stage}` : "";
-    setChatGPTResult(`${last.message}${stageText}`, "failure");
+    setResult(`${last.message}${stageText}`, "failure");
     return;
   }
 
   if (last.status === "running") {
-    setChatGPTResult(last.message, "");
+    setResult(last.message, "");
   }
 }
 
@@ -104,51 +116,87 @@ function setChatGPTResult(message, type = "") {
   chatgptResult.className = `result ${type}`.trim();
 }
 
-async function sendToChatGPT(event) {
+function setGeminiResult(message, type = "") {
+  geminiResult.textContent = message;
+  geminiResult.className = `result ${type}`.trim();
+}
+
+async function sendToProvider({
+  event,
+  promptElement,
+  sendButton,
+  setResult,
+  messageType,
+  providerName
+}) {
   event.preventDefault();
 
-  const prompt = chatgptPrompt.value.trim();
+  const prompt = promptElement.value.trim();
 
   if (!prompt) {
-    setChatGPTResult("请输入要发送的内容", "failure");
+    setResult("请输入要发送的内容", "failure");
     return;
   }
 
-  sendChatGPTButton.disabled = true;
-  setChatGPTResult("正在发送到 ChatGPT，并等待回复...", "");
+  sendButton.disabled = true;
+  setResult(`正在发送到 ${providerName}，并等待回复...`, "");
 
   let response;
 
   try {
     response = await chrome.runtime.sendMessage({
-      type: "HAI_MEETING_SEND_CHATGPT_PROMPT",
+      type: messageType,
       prompt
     });
   } catch (error) {
-    sendChatGPTButton.disabled = false;
-    setChatGPTResult(
+    sendButton.disabled = false;
+    setResult(
       `发送失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`,
       "failure"
     );
     return;
   }
 
-  sendChatGPTButton.disabled = false;
+  sendButton.disabled = false;
 
   if (!response?.ok) {
     const errorText = response?.error || "发送失败：插件后台没有返回具体原因";
     const stageText = response?.stage ? `\n阶段：${response.stage}` : "";
     const detailText = response?.detail ? `\n细节：${JSON.stringify(response.detail)}` : "";
-    setChatGPTResult(`${errorText}${stageText}${detailText}`, "failure");
+    setResult(`${errorText}${stageText}${detailText}`, "failure");
     await refreshStatus();
     return;
   }
 
-  setChatGPTResult(response.text, "success");
+  setResult(response.text, "success");
   await refreshStatus();
+}
+
+async function sendToChatGPT(event) {
+  return sendToProvider({
+    event,
+    promptElement: chatgptPrompt,
+    sendButton: sendChatGPTButton,
+    setResult: setChatGPTResult,
+    messageType: "HAI_MEETING_SEND_CHATGPT_PROMPT",
+    providerName: "ChatGPT"
+  });
+}
+
+async function sendToGemini(event) {
+  return sendToProvider({
+    event,
+    promptElement: geminiPrompt,
+    sendButton: sendGeminiButton,
+    setResult: setGeminiResult,
+    messageType: "HAI_MEETING_SEND_GEMINI_PROMPT",
+    providerName: "Gemini"
+  });
 }
 
 refreshButton.addEventListener("click", refreshStatus);
 chatgptForm.addEventListener("submit", sendToChatGPT);
+geminiForm.addEventListener("submit", sendToGemini);
 refreshStatus();
 restoreLastChatGPTResult();
+restoreLastGeminiResult();

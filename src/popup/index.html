@@ -33,6 +33,19 @@
         </form>
         <div id="chatgpt-result" class="result" aria-live="polite">等待发送</div>
       </section>
+
+      <section class="panel" aria-labelledby="gemini-run-title">
+        <h2 id="gemini-run-title">Gemini 单模型测试</h2>
+        <form id="gemini-form" class="prompt-form">
+          <textarea
+            id="gemini-prompt"
+            rows="5"
+            placeholder="输入要发送给 Gemini 的内容"
+          ></textarea>
+          <button id="send-gemini-button" class="primary-button" type="submit">发送到 Gemini</button>
+        </form>
+        <div id="gemini-result" class="result" aria-live="polite">等待发送</div>
+      </section>
     </main>
 
     <script type="module" src="./popup.js"></script>
