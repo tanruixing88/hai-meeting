@@ -26,7 +26,9 @@
     ],
     assistantMessageSelectors: [
       "[data-message-author-role='assistant']",
+      "article:has([data-message-author-role='assistant'])",
       "article[data-testid*='conversation-turn'] [data-message-author-role='assistant']",
+      "article[data-testid*='conversation-turn']",
       "main [data-message-author-role='assistant']"
     ]
   };
@@ -131,18 +133,28 @@
 
     for (const selector of provider.assistantMessageSelectors) {
       for (const element of document.querySelectorAll(selector)) {
-        if (!seen.has(element) && getApi().isVisible(element)) {
+        const text = element.innerText?.trim();
+        const hasAssistantRole = element.matches("[data-message-author-role='assistant']") ||
+          Boolean(element.querySelector("[data-message-author-role='assistant']"));
+
+        if (!seen.has(element) && getApi().isVisible(element) && text && hasAssistantRole) {
           seen.add(element);
           messages.push(element);
         }
       }
     }
 
-    return messages;
+    return messages.sort((first, second) => {
+      if (first === second) {
+        return 0;
+      }
+
+      return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
   }
 
-  function getLastAssistantText() {
-    const messages = getAssistantMessages();
+  function getLastAssistantText(previousElements = new Set()) {
+    const messages = getAssistantMessages().filter((message) => !previousElements.has(message));
     const last = messages.at(-1);
     return last?.innerText?.trim() ?? "";
   }
@@ -162,14 +174,15 @@
     });
   }
 
-  async function waitForResponse(previousText, previousCount, timeoutMs) {
+  async function waitForResponse(previousText, previousCount, previousElements, timeoutMs) {
     const start = Date.now();
     let lastText = "";
     let lastChangedAt = Date.now();
 
     while (Date.now() - start < timeoutMs) {
-      const currentCount = getAssistantMessages().length;
-      const currentText = getLastAssistantText();
+      const currentMessages = getAssistantMessages();
+      const currentCount = currentMessages.length;
+      const currentText = getLastAssistantText(previousElements) || getLastAssistantText();
 
       if (currentText && currentText !== lastText) {
         lastText = currentText;
@@ -194,7 +207,9 @@
       .catch(() => {
         throw new Error("阶段 input：未找到可见的 ChatGPT 输入框");
       });
-    const previousCount = getAssistantMessages().length;
+    const previousMessages = getAssistantMessages();
+    const previousElements = new Set(previousMessages);
+    const previousCount = previousMessages.length;
     const previousText = getLastAssistantText();
 
     fillInput(input, prompt);
@@ -212,7 +227,7 @@
 
     sendButton.click();
 
-    const text = await waitForResponse(previousText, previousCount, timeoutMs)
+    const text = await waitForResponse(previousText, previousCount, previousElements, timeoutMs)
       .catch((error) => {
         throw new Error(`阶段 response：${error instanceof Error ? error.message : String(error)}`);
       });

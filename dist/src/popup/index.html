@@ -21,6 +21,32 @@
         <div id="provider-list" class="provider-list"></div>
       </section>
 
+      <section class="panel" aria-labelledby="all-models-run-title">
+        <h2 id="all-models-run-title">三模型统一发送</h2>
+        <form id="all-models-form" class="prompt-form">
+          <textarea
+            id="all-models-prompt"
+            rows="6"
+            placeholder="输入要同时发送给 ChatGPT、Gemini、DeepSeek 的内容"
+          ></textarea>
+          <button id="send-all-models-button" class="primary-button" type="submit">发送到全部模型</button>
+        </form>
+        <div class="all-results" aria-live="polite">
+          <article class="model-result">
+            <strong>ChatGPT</strong>
+            <div id="all-chatgpt-result" class="result compact">等待发送</div>
+          </article>
+          <article class="model-result">
+            <strong>Gemini</strong>
+            <div id="all-gemini-result" class="result compact">等待发送</div>
+          </article>
+          <article class="model-result">
+            <strong>DeepSeek</strong>
+            <div id="all-deepseek-result" class="result compact">等待发送</div>
+          </article>
+        </div>
+      </section>
+
       <section class="panel" aria-labelledby="chatgpt-run-title">
         <h2 id="chatgpt-run-title">ChatGPT 单模型测试</h2>
         <form id="chatgpt-form" class="prompt-form">

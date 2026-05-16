@@ -3,6 +3,12 @@ import { PROVIDERS } from "../shared/providers.js";
 const providerList = document.querySelector("#provider-list");
 const currentPage = document.querySelector("#current-page");
 const refreshButton = document.querySelector("#refresh-button");
+const allModelsForm = document.querySelector("#all-models-form");
+const allModelsPrompt = document.querySelector("#all-models-prompt");
+const sendAllModelsButton = document.querySelector("#send-all-models-button");
+const allChatGPTResult = document.querySelector("#all-chatgpt-result");
+const allGeminiResult = document.querySelector("#all-gemini-result");
+const allDeepSeekResult = document.querySelector("#all-deepseek-result");
 const chatgptForm = document.querySelector("#chatgpt-form");
 const chatgptPrompt = document.querySelector("#chatgpt-prompt");
 const sendChatGPTButton = document.querySelector("#send-chatgpt-button");
@@ -95,6 +101,17 @@ async function restoreLastDeepSeekResult() {
   await restoreLastProviderResult("lastDeepSeekResult", setDeepSeekResult);
 }
 
+async function restoreLastAllModelsResult() {
+  const stored = await chrome.storage.local.get("lastAllModelsResult");
+  const last = stored.lastAllModelsResult;
+
+  if (!last?.result?.results) {
+    return;
+  }
+
+  renderAllModelResults(last.result.results);
+}
+
 async function restoreLastProviderResult(storageKey, setResult) {
   const stored = await chrome.storage.local.get(storageKey);
   const last = stored[storageKey];
@@ -132,6 +149,44 @@ function setGeminiResult(message, type = "") {
 function setDeepSeekResult(message, type = "") {
   deepseekResult.textContent = message;
   deepseekResult.className = `result ${type}`.trim();
+}
+
+function setAllProviderResult(element, message, type = "") {
+  element.textContent = message;
+  element.className = `result compact ${type}`.trim();
+}
+
+function formatProviderResult(result) {
+  if (!result) {
+    return {
+      message: "未返回结果",
+      type: "failure"
+    };
+  }
+
+  if (result.ok) {
+    return {
+      message: result.text || "完成，但回复为空",
+      type: "success"
+    };
+  }
+
+  const stageText = result.stage ? `\n阶段：${result.stage}` : "";
+
+  return {
+    message: `${result.error || "发送失败"}${stageText}`,
+    type: "failure"
+  };
+}
+
+function renderAllModelResults(results) {
+  const chatgpt = formatProviderResult(results.chatgpt);
+  const gemini = formatProviderResult(results.gemini);
+  const deepseek = formatProviderResult(results.deepseek);
+
+  setAllProviderResult(allChatGPTResult, chatgpt.message, chatgpt.type);
+  setAllProviderResult(allGeminiResult, gemini.message, gemini.type);
+  setAllProviderResult(allDeepSeekResult, deepseek.message, deepseek.type);
 }
 
 async function sendToProvider({
@@ -218,11 +273,62 @@ async function sendToDeepSeek(event) {
   });
 }
 
+async function sendToAllModels(event) {
+  event.preventDefault();
+
+  const prompt = allModelsPrompt.value.trim();
+
+  if (!prompt) {
+    const message = "请输入要发送的内容";
+    setAllProviderResult(allChatGPTResult, message, "failure");
+    setAllProviderResult(allGeminiResult, message, "failure");
+    setAllProviderResult(allDeepSeekResult, message, "failure");
+    return;
+  }
+
+  sendAllModelsButton.disabled = true;
+  setAllProviderResult(allChatGPTResult, "正在发送到 ChatGPT，并等待回复...", "");
+  setAllProviderResult(allGeminiResult, "正在发送到 Gemini，并等待回复...", "");
+  setAllProviderResult(allDeepSeekResult, "正在发送到 DeepSeek，并等待回复...", "");
+
+  let response;
+
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "HAI_MEETING_SEND_ALL_PROMPT",
+      prompt
+    });
+  } catch (error) {
+    const message = `发送失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`;
+    sendAllModelsButton.disabled = false;
+    setAllProviderResult(allChatGPTResult, message, "failure");
+    setAllProviderResult(allGeminiResult, message, "failure");
+    setAllProviderResult(allDeepSeekResult, message, "failure");
+    return;
+  }
+
+  sendAllModelsButton.disabled = false;
+
+  if (!response?.results) {
+    const message = response?.error || "发送失败：插件后台没有返回三模型结果";
+    setAllProviderResult(allChatGPTResult, message, "failure");
+    setAllProviderResult(allGeminiResult, message, "failure");
+    setAllProviderResult(allDeepSeekResult, message, "failure");
+    await refreshStatus();
+    return;
+  }
+
+  renderAllModelResults(response.results);
+  await refreshStatus();
+}
+
 refreshButton.addEventListener("click", refreshStatus);
+allModelsForm.addEventListener("submit", sendToAllModels);
 chatgptForm.addEventListener("submit", sendToChatGPT);
 geminiForm.addEventListener("submit", sendToGemini);
 deepseekForm.addEventListener("submit", sendToDeepSeek);
 refreshStatus();
+restoreLastAllModelsResult();
 restoreLastChatGPTResult();
 restoreLastGeminiResult();
 restoreLastDeepSeekResult();

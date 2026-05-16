@@ -306,6 +306,53 @@ async function sendPromptToDeepSeek(prompt) {
   });
 }
 
+async function sendPromptToAllProviders(prompt) {
+  const text = prompt?.trim();
+
+  if (!text) {
+    return {
+      ok: false,
+      error: "请输入要发送的内容"
+    };
+  }
+
+  await chrome.storage.local.set({
+    lastAllModelsResult: {
+      status: "running",
+      prompt: text,
+      updatedAt: new Date().toISOString(),
+      message: "正在发送到全部模型，并等待回复..."
+    }
+  });
+
+  const entries = await Promise.all([
+    sendPromptToChatGPT(text).then((result) => ["chatgpt", result]),
+    sendPromptToGemini(text).then((result) => ["gemini", result]),
+    sendPromptToDeepSeek(text).then((result) => ["deepseek", result])
+  ]);
+  const results = Object.fromEntries(entries);
+  const ok = Object.values(results).some((result) => result.ok);
+
+  const summary = {
+    ok,
+    prompt: text,
+    updatedAt: new Date().toISOString(),
+    results
+  };
+
+  await chrome.storage.local.set({
+    lastAllModelsResult: {
+      status: ok ? "success" : "failure",
+      prompt: text,
+      updatedAt: summary.updatedAt,
+      message: ok ? "三模型运行完成" : "三模型运行失败",
+      result: summary
+    }
+  });
+
+  return summary;
+}
+
 async function getStatusSnapshot() {
   const [tabs, activeTab] = await Promise.all([queryTabs(), getActiveTab()]);
   const currentProvider = getProviderByUrl(activeTab?.url);
@@ -369,6 +416,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "HAI_MEETING_SEND_DEEPSEEK_PROMPT") {
     sendPromptToDeepSeek(message.prompt)
+      .then((result) => sendResponse(result))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "HAI_MEETING_SEND_ALL_PROMPT") {
+    sendPromptToAllProviders(message.prompt)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({
