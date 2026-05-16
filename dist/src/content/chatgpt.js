@@ -1,9 +1,9 @@
 (() => {
-  if (window.haiMeetingChatGPTLoaded) {
+  if (window.haiMeetingChatGPTLoadedV9) {
     return;
   }
 
-  window.haiMeetingChatGPTLoaded = true;
+  window.haiMeetingChatGPTLoadedV9 = true;
 
   const provider = {
     id: "chatgpt",
@@ -25,10 +25,21 @@
       "button[aria-label*='Send']"
     ],
     assistantMessageSelectors: [
+      "[data-message-author-role='assistant'][data-message-id] .markdown p",
+      "[data-message-author-role='assistant'][data-message-id] .markdown",
+      "[data-message-author-role='assistant'][data-message-id]",
       "[data-message-author-role='assistant']",
+      "[data-message-author-role='assistant'] .markdown",
+      "[data-message-author-role='assistant'] [class*='markdown']",
+      "[data-message-author-role='assistant'] [class*='prose']",
       "article:has([data-message-author-role='assistant'])",
       "article[data-testid*='conversation-turn'] [data-message-author-role='assistant']",
+      "article[data-testid*='conversation-turn'] [class*='markdown']",
+      "article[data-testid*='conversation-turn'] [class*='prose']",
       "article[data-testid*='conversation-turn']",
+      "main .markdown",
+      "main [class*='markdown']",
+      "main [class*='prose']",
       "main [data-message-author-role='assistant']"
     ]
   };
@@ -127,24 +138,9 @@
     }) ?? null;
   }
 
-  function getAssistantMessages() {
-    const seen = new Set();
-    const messages = [];
-
-    for (const selector of provider.assistantMessageSelectors) {
-      for (const element of document.querySelectorAll(selector)) {
-        const text = element.innerText?.trim();
-        const hasAssistantRole = element.matches("[data-message-author-role='assistant']") ||
-          Boolean(element.querySelector("[data-message-author-role='assistant']"));
-
-        if (!seen.has(element) && getApi().isVisible(element) && text && hasAssistantRole) {
-          seen.add(element);
-          messages.push(element);
-        }
-      }
-    }
-
-    return messages.sort((first, second) => {
+  function getExactResponseNodes() {
+    return Array.from(document.querySelectorAll("[data-message-author-role='assistant'][data-message-id]"))
+      .sort((first, second) => {
       if (first === second) {
         return 0;
       }
@@ -153,65 +149,229 @@
     });
   }
 
-  function getLastAssistantText(previousElements = new Set()) {
-    const messages = getAssistantMessages().filter((message) => !previousElements.has(message));
-    const last = messages.at(-1);
-    return last?.innerText?.trim() ?? "";
+  function getLatestAssistantText(run = activeRun) {
+    const snapshots = getResponseSnapshots();
+    const changedSnapshots = run
+      ? snapshots.filter((snapshot) => run.baselineMessageTextById.get(snapshot.id) !== snapshot.text)
+      : snapshots;
+
+    for (const snapshot of changedSnapshots.slice().reverse()) {
+      const text = normalizeResponseText(snapshot.text);
+
+      if (isValidResponseText(text, run)) {
+        return text;
+      }
+    }
+
+    return "";
   }
 
-  function isGenerating() {
-    const controls = Array.from(document.querySelectorAll("button, [role='button']"));
+  function getResponseSnapshots() {
+    return getExactResponseNodes().map((node) => ({
+      id: node.getAttribute("data-message-id") || "",
+      text: normalizeResponseText(getFinalTextFromMessage(node))
+    }));
+  }
 
-    return controls.some((control) => {
-      const label = [
-        control.getAttribute("aria-label"),
-        control.getAttribute("data-testid"),
-        control.textContent
-      ].filter(Boolean).join(" ").toLowerCase();
+  function createMessageTextById(snapshots = getResponseSnapshots()) {
+    return new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.text]));
+  }
 
-      return getApi().isVisible(control) &&
-        (label.includes("stop") || label.includes("停止") || label.includes("streaming"));
+  function getFinalTextFromMessage(message) {
+    if (!message) {
+      return "";
+    }
+
+    const paragraphCandidates = Array.from(message.querySelectorAll(".markdown p, [class*='markdown'] p"))
+      .filter((element) => getElementText(element));
+
+    if (paragraphCandidates.length > 0) {
+      return paragraphCandidates
+        .map(getElementText)
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    const markdownCandidates = Array.from(message.querySelectorAll(".markdown, [class*='markdown']"))
+      .filter((element) => getElementText(element));
+
+    if (markdownCandidates.length > 0) {
+      return markdownCandidates
+        .map(getElementText)
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    return "";
+  }
+
+  function getElementText(element) {
+    return (element?.textContent || element?.innerText || "").trim();
+  }
+
+  function normalizeResponseText(text) {
+    return String(text || "")
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+
+  function isValidResponseText(text, run = activeRun) {
+    const normalized = normalizeResponseText(text);
+
+    if (!normalized) {
+      return false;
+    }
+
+    if (run?.prompt && normalized === normalizeResponseText(run.prompt)) {
+      return false;
+    }
+
+    return !normalized.includes("已发送到 ChatGPT，回复将由页面监听器更新") &&
+      !normalized.includes("window.__oai_") &&
+      !normalized.includes("requestAnimationFrame") &&
+      !normalized.includes("window.__remixContext") &&
+      !normalized.includes("<script");
+  }
+
+  const liveStorageKey = "liveResponse_chatgpt";
+  let activeRun = null;
+  let observer = null;
+  let emitTimer = null;
+  let pollTimer = null;
+  let diagnosticTimer = null;
+
+  function liveUpdatedAt() {
+    return new Date().toISOString();
+  }
+
+  function setLiveState(value) {
+    chrome.storage.local.set({
+      [liveStorageKey]: {
+        providerId: provider.id,
+        providerName: provider.name,
+        href: window.location.href,
+        title: document.title,
+        updatedAt: liveUpdatedAt(),
+        ...value
+      }
     });
   }
 
-  async function waitForResponse(previousText, previousCount, previousElements, timeoutMs) {
-    const start = Date.now();
-    let lastText = "";
-    let lastChangedAt = Date.now();
+  function beginRun(runId, prompt) {
+    window.clearInterval(pollTimer);
+    window.clearTimeout(diagnosticTimer);
+    activeRun = {
+      runId,
+      prompt,
+      baselineMessageTextById: createMessageTextById(),
+      lastText: "",
+      startedAt: Date.now()
+    };
 
-    while (Date.now() - start < timeoutMs) {
-      const currentMessages = getAssistantMessages();
-      const currentCount = currentMessages.length;
-      const currentText = getLastAssistantText(previousElements) || getLastAssistantText();
+    setLiveState({
+      status: "waiting",
+      runId,
+      prompt,
+      text: "",
+      message: "已发送，等待 ChatGPT 回复..."
+    });
 
-      if (currentText && currentText !== lastText) {
-        lastText = currentText;
-        lastChangedAt = Date.now();
+    pollTimer = window.setInterval(() => {
+      if (!activeRun || Date.now() - activeRun.startedAt > 120000) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+        return;
       }
 
-      const hasNewText = lastText && (lastText !== previousText || currentCount > previousCount);
-      const stableLongEnough = Date.now() - lastChangedAt >= 2500;
+      emitLatestResponse();
+    }, 750);
 
-      if (hasNewText && stableLongEnough && !isGenerating()) {
-        return lastText;
+    diagnosticTimer = window.setTimeout(() => {
+      if (!activeRun?.lastText) {
+        setLiveState({
+          status: "waiting",
+          runId,
+          prompt,
+          text: "",
+          message: `仍在等待 ChatGPT 回复。诊断：${JSON.stringify(getExtractionDiagnostics())}`
+        });
       }
-
-      await getApi().sleep(400);
-    }
-
-    throw new Error("等待 ChatGPT 回复超时");
+    }, 8000);
   }
 
-  async function sendPrompt(prompt, timeoutMs = 120000) {
+  function emitLatestResponse() {
+    if (!activeRun) {
+      return;
+    }
+
+    const text = getLatestAssistantText(activeRun);
+
+    if (!isValidResponseText(text, activeRun) || text === activeRun.lastText) {
+      return;
+    }
+
+    activeRun.lastText = text;
+    window.clearTimeout(diagnosticTimer);
+    setLiveState({
+      status: "success",
+      runId: activeRun.runId,
+      prompt: activeRun.prompt,
+      text,
+      message: text
+    });
+  }
+
+  function getExtractionDiagnostics() {
+    const selectors = [
+      "article[data-testid*='conversation-turn']",
+      "[data-message-author-role='assistant'][data-message-id]",
+      "[data-message-author-role='assistant'][data-message-id] .markdown",
+      "[data-message-author-role='assistant'][data-message-id] .markdown p"
+    ];
+
+    return selectors.map((selector) => {
+      const elements = Array.from(document.querySelectorAll(selector));
+      const lastText = getElementText(elements.at(-1));
+
+      return {
+        selector,
+        count: elements.length,
+        lastText: lastText.slice(0, 80)
+      };
+    });
+  }
+
+  function scheduleEmitLatestResponse() {
+    window.clearTimeout(emitTimer);
+    emitTimer = window.setTimeout(emitLatestResponse, 250);
+  }
+
+  function ensureResponseObserver() {
+    if (observer) {
+      return;
+    }
+
+    observer = new MutationObserver(scheduleEmitLatestResponse);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
+
+  ensureResponseObserver();
+
+  async function sendPrompt(prompt, runId) {
     const input = await getApi().waitFor(() => getInput(), { timeoutMs: 15000 })
       .catch(() => {
         throw new Error("阶段 input：未找到可见的 ChatGPT 输入框");
       });
-    const previousMessages = getAssistantMessages();
-    const previousElements = new Set(previousMessages);
-    const previousCount = previousMessages.length;
-    const previousText = getLastAssistantText();
 
+    beginRun(runId, prompt);
     fillInput(input, prompt);
     await getApi().sleep(300);
 
@@ -226,17 +386,13 @@
     });
 
     sendButton.click();
+    scheduleEmitLatestResponse();
 
-    const text = await waitForResponse(previousText, previousCount, previousElements, timeoutMs)
-      .catch((error) => {
-        throw new Error(`阶段 response：${error instanceof Error ? error.message : String(error)}`);
-      });
-
-    if (!text) {
-      throw new Error("阶段 response：ChatGPT 回复内容为空");
-    }
-
-    return text;
+    return {
+      runId,
+      status: "sent",
+      message: "已发送到 ChatGPT，回复将由页面监听器更新"
+    };
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -255,9 +411,9 @@
       return false;
     }
 
-    if (message?.type === "HAI_MEETING_CHATGPT_SEND_PROMPT") {
-      sendPrompt(message.prompt, message.timeoutMs)
-        .then((text) => sendResponse({ ok: true, text }))
+    if (message?.type === "HAI_MEETING_CHATGPT_SEND_PROMPT_V9") {
+      sendPrompt(message.prompt, message.runId)
+        .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) => {
           sendResponse({
             ok: false,

@@ -1,9 +1,9 @@
 (() => {
-  if (window.haiMeetingDeepSeekLoaded) {
+  if (window.haiMeetingDeepSeekLoadedV8) {
     return;
   }
 
-  window.haiMeetingDeepSeekLoaded = true;
+  window.haiMeetingDeepSeekLoadedV8 = true;
 
   const provider = {
     id: "deepseek",
@@ -17,6 +17,7 @@
       "[role='textbox']"
     ],
     sendButtonSelectors: [
+      "div[role='button'].ds-icon-button",
       "button[aria-label='Send']",
       "button[aria-label='发送']",
       "button[aria-label*='Send']",
@@ -102,13 +103,26 @@
     input.focus();
 
     if (input.tagName.toLowerCase() === "textarea") {
+      input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+      input.dispatchEvent(new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: prompt
+      }));
       setNativeTextareaValue(input, prompt);
       input.dispatchEvent(new InputEvent("input", {
         bubbles: true,
         inputType: "insertText",
         data: prompt
       }));
+      input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: prompt }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent("keyup", {
+        bubbles: true,
+        key: prompt.at(-1) || "",
+        code: "KeyA"
+      }));
       return;
     }
 
@@ -134,6 +148,12 @@
       inputType: "insertText",
       data: prompt
     }));
+    input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: prompt }));
+    input.dispatchEvent(new KeyboardEvent("keyup", {
+      bubbles: true,
+      key: prompt.at(-1) || "",
+      code: "KeyA"
+    }));
   }
 
   function candidateToButton(element) {
@@ -148,11 +168,57 @@
     return element.closest?.("button, [role='button'], [class*='send'], [class*='submit']") ?? null;
   }
 
+  function isClickableElement(element) {
+    if (!element) {
+      return false;
+    }
+
+    const tag = element.tagName?.toLowerCase();
+    const role = element.getAttribute?.("role");
+
+    return tag === "button" ||
+      role === "button" ||
+      typeof element.onclick === "function" ||
+      window.getComputedStyle(element).cursor === "pointer";
+  }
+
+  function candidateToClickable(element) {
+    let current = element;
+
+    while (current && current !== document.body) {
+      if (isClickableElement(current)) {
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return candidateToButton(element);
+  }
+
   function isUsableButton(button) {
     return button &&
       getApi().isVisible(button) &&
       !button.disabled &&
-      button.getAttribute("aria-disabled") !== "true";
+      button.getAttribute("aria-disabled") !== "true" &&
+      !String(button.className || "").includes("disabled");
+  }
+
+  function isEnabledSendButton(button) {
+    return isUsableButton(button) && isDeepSeekSendIconButton(button);
+  }
+
+  function isDeepSeekSendIconButton(button) {
+    if (!button?.matches?.("[role='button'].ds-icon-button, button")) {
+      return false;
+    }
+
+    const path = button.querySelector("svg path");
+    const d = path?.getAttribute("d") || "";
+
+    return d.includes("M8.3125 0.981587") &&
+      d.includes("L14.707 6.83608") &&
+      d.includes("V15.0431");
   }
 
   function isLikelySendButton(button) {
@@ -163,7 +229,8 @@
       button.textContent
     ].filter(Boolean).join(" ").toLowerCase();
 
-    return label.includes("send") ||
+    return isDeepSeekSendIconButton(button) ||
+      label.includes("send") ||
       label.includes("发送") ||
       label.includes("submit") ||
       label.includes("send-message") ||
@@ -221,7 +288,9 @@
       score += 40;
     }
 
-    if (button.querySelector("svg")) {
+    if (isDeepSeekSendIconButton(button)) {
+      score += 240;
+    } else if (button.querySelector("svg")) {
       score += 20;
     }
 
@@ -229,6 +298,10 @@
       score += 70;
     } else if (buttonRect.left >= inputRect.left && buttonRect.left <= inputRect.right + 120) {
       score += 20;
+    }
+
+    if (buttonCenterX >= inputRect.right - 24) {
+      score += 90;
     }
 
     if (buttonCenterY >= inputRect.bottom - 120 && buttonCenterY <= inputRect.bottom + 120) {
@@ -240,6 +313,8 @@
     if (buttonCenterX > inputRect.left + inputRect.width / 2) {
       score += 35;
     }
+
+    score += Math.max(0, Math.min((buttonCenterX - inputRect.left) / 12, 80));
 
     if (buttonRect.width <= 72 && buttonRect.height <= 72) {
       score += 15;
@@ -270,9 +345,9 @@
 
   function getClickableCandidates(scope) {
     return Array.from(scope.querySelectorAll(
-      "button, [role='button'], [class*='send'], [class*='submit'], [aria-label]"
+      "button, [role='button'], [class*='send'], [class*='submit'], [aria-label], svg"
     ))
-      .map(candidateToButton)
+      .map(candidateToClickable)
       .filter(Boolean);
   }
 
@@ -298,6 +373,14 @@
   }
 
   function findSendButton() {
+    const input = getInput();
+    const sendIconButton = Array.from(document.querySelectorAll("[role='button'].ds-icon-button, button"))
+      .find((button) => isUsableButton(button) && isDeepSeekSendIconButton(button));
+
+    if (sendIconButton) {
+      return sendIconButton;
+    }
+
     for (const selector of provider.sendButtonSelectors) {
       const button = candidateToButton(document.querySelector(selector));
 
@@ -306,7 +389,6 @@
       }
     }
 
-    const input = getInput();
     const candidates = input ? getRankedButtonCandidates(input) : [];
     const best = candidates.find(({ button, score }) => isLikelySendButton(button) || score >= 75);
 
@@ -325,6 +407,8 @@
     return {
       label: label || "(no label)",
       tag: button.tagName.toLowerCase(),
+      role: button.getAttribute("role") || "",
+      ariaLabel: button.getAttribute("aria-label") || "",
       className: String(button.className || "").slice(0, 120),
       score: input ? Math.round(scoreButton(button, input)) : 0,
       rect: {
@@ -343,70 +427,38 @@
   }
 
   function dispatchMouseClick(element) {
+    const rect = element.getBoundingClientRect();
+    const clientX = rect.left + rect.width / 2;
+    const clientY = rect.top + rect.height / 2;
     const options = {
       bubbles: true,
       cancelable: true,
-      view: window
+      view: window,
+      clientX,
+      clientY,
+      screenX: window.screenX + clientX,
+      screenY: window.screenY + clientY
     };
 
-    element.dispatchEvent(new PointerEvent("pointerdown", options));
+    element.dispatchEvent(new PointerEvent("pointerdown", {
+      ...options,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true
+    }));
     element.dispatchEvent(new MouseEvent("mousedown", options));
-    element.dispatchEvent(new PointerEvent("pointerup", options));
+    element.dispatchEvent(new PointerEvent("pointerup", {
+      ...options,
+      pointerId: 1,
+      pointerType: "mouse",
+      isPrimary: true
+    }));
     element.dispatchEvent(new MouseEvent("mouseup", options));
     element.dispatchEvent(new MouseEvent("click", options));
-  }
 
-  function pressEnter(input) {
-    input.focus();
-
-    const eventOptions = {
-      bubbles: true,
-      cancelable: true,
-      key: "Enter",
-      code: "Enter",
-      keyCode: 13,
-      which: 13
-    };
-
-    input.dispatchEvent(new KeyboardEvent("keydown", eventOptions));
-    input.dispatchEvent(new KeyboardEvent("keypress", eventOptions));
-    input.dispatchEvent(new KeyboardEvent("keyup", eventOptions));
-  }
-
-  function submitClosestForm(input) {
-    const form = input.closest?.("form");
-
-    if (!form) {
-      return false;
+    if (typeof element.click === "function") {
+      element.click();
     }
-
-    if (typeof form.requestSubmit === "function") {
-      form.requestSubmit();
-      return true;
-    }
-
-    form.dispatchEvent(new SubmitEvent("submit", {
-      bubbles: true,
-      cancelable: true
-    }));
-    return true;
-  }
-
-  async function waitForSendStarted(previousText, previousCount, timeoutMs = 2500) {
-    const start = Date.now();
-
-    while (Date.now() - start < timeoutMs) {
-      const currentCount = getResponseElements().length;
-      const currentText = getLastResponseText();
-
-      if (isGenerating() || currentCount > previousCount || (currentText && currentText !== previousText)) {
-        return true;
-      }
-
-      await getApi().sleep(150);
-    }
-
-    return false;
   }
 
   function getResponseElements() {
@@ -431,6 +483,10 @@
 
       return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
     });
+  }
+
+  function getNewResponseElements(previousElements) {
+    return getResponseElements().filter((element) => !previousElements.has(element));
   }
 
   function isInsideReasoning(element) {
@@ -549,63 +605,122 @@
     return texts.at(-1) ?? "";
   }
 
-  function isGenerating() {
-    const controls = Array.from(document.querySelectorAll("button, [role='button']"));
+  async function waitForSendButtonEnabled(input, timeoutMs = 8000) {
+    const start = Date.now();
+    let lastButton = null;
 
-    return controls.some((control) => {
-      const label = [
-        control.getAttribute("aria-label"),
-        control.getAttribute("data-testid"),
-        control.getAttribute("title"),
-        control.textContent
-      ].filter(Boolean).join(" ").toLowerCase();
+    while (Date.now() - start < timeoutMs) {
+      const button = Array.from(document.querySelectorAll("[role='button'].ds-icon-button, button"))
+        .find((candidate) => isDeepSeekSendIconButton(candidate));
 
-      return getApi().isVisible(control) &&
-        (label.includes("stop") ||
-          label.includes("停止生成") ||
-          label.includes("cancel generation"));
+      if (button) {
+        lastButton = button;
+
+        if (isEnabledSendButton(button)) {
+          return button;
+        }
+      }
+
+      await getApi().sleep(150);
+    }
+
+    throw new Error(
+      `阶段 send_button_enabled：已写入内容，但 DeepSeek 发送按钮仍为禁用态。按钮：${JSON.stringify(lastButton ? describeButton(lastButton, input) : null)}。候选：${JSON.stringify(describeTopButtonCandidates(input))}`
+    );
+  }
+
+  const liveStorageKey = "liveResponse_deepseek";
+  let activeRun = null;
+  let observer = null;
+  let emitTimer = null;
+
+  function liveUpdatedAt() {
+    return new Date().toISOString();
+  }
+
+  function setLiveState(value) {
+    chrome.storage.local.set({
+      [liveStorageKey]: {
+        providerId: provider.id,
+        providerName: provider.name,
+        href: window.location.href,
+        title: document.title,
+        updatedAt: liveUpdatedAt(),
+        ...value
+      }
     });
   }
 
-  async function waitForResponse(previousText, previousCount, timeoutMs) {
-    const start = Date.now();
-    let lastText = "";
-    let lastChangedAt = Date.now();
+  function beginRun(runId, prompt) {
+    activeRun = {
+      runId,
+      prompt,
+      baselineText: getLastResponseText(),
+      lastText: "",
+      startedAt: Date.now()
+    };
 
-    while (Date.now() - start < timeoutMs) {
-      const currentCount = getResponseElements().length;
-      const currentText = getLastResponseText();
-
-      if (currentText && currentText !== lastText) {
-        lastText = currentText;
-        lastChangedAt = Date.now();
-      }
-
-      const hasNewText = lastText && (lastText !== previousText || currentCount > previousCount);
-      const stableLongEnough = Date.now() - lastChangedAt >= 2500;
-
-      if (hasNewText && stableLongEnough && !isGenerating()) {
-        return lastText;
-      }
-
-      await getApi().sleep(400);
-    }
-
-    throw new Error("等待 DeepSeek 回复超时");
+    setLiveState({
+      status: "waiting",
+      runId,
+      prompt,
+      text: "",
+      message: "已发送，等待 DeepSeek 回复..."
+    });
   }
 
-  async function sendPrompt(prompt, timeoutMs = 120000) {
+  function emitLatestResponse() {
+    if (!activeRun) {
+      return;
+    }
+
+    const text = getLastResponseText();
+
+    if (!text || text === activeRun.baselineText || text === activeRun.lastText) {
+      return;
+    }
+
+    activeRun.lastText = text;
+    setLiveState({
+      status: "success",
+      runId: activeRun.runId,
+      prompt: activeRun.prompt,
+      text,
+      message: text
+    });
+  }
+
+  function scheduleEmitLatestResponse() {
+    window.clearTimeout(emitTimer);
+    emitTimer = window.setTimeout(emitLatestResponse, 250);
+  }
+
+  function ensureResponseObserver() {
+    if (observer) {
+      return;
+    }
+
+    observer = new MutationObserver(scheduleEmitLatestResponse);
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
+
+  ensureResponseObserver();
+
+  async function sendPrompt(prompt, runId) {
     const input = await getApi().waitFor(() => getInput(), { timeoutMs: 15000 })
       .catch(() => {
         throw new Error("阶段 input：未找到可见的 DeepSeek 输入框");
       });
-    const previousCount = getResponseElements().length;
-    const previousText = getLastResponseText();
 
+    beginRun(runId, prompt);
     fillInput(input, prompt);
     await getApi().sleep(350);
 
-    const sendButton = await getApi().waitFor(() => findSendButton(), {
+    await getApi().waitFor(() => findSendButton(), {
       timeoutMs: 10000,
       intervalMs: 200
     }).catch(() => {
@@ -616,72 +731,17 @@
       );
     });
 
+    const sendButton = await waitForSendButtonEnabled(input);
+    await getApi().sleep(200);
     dispatchMouseClick(sendButton);
+    scheduleEmitLatestResponse();
 
-    const startedAfterClick = await waitForSendStarted(previousText, previousCount);
-
-    if (!startedAfterClick) {
-      pressEnter(input);
-      await getApi().sleep(300);
-
-      const startedAfterEnter = await waitForSendStarted(previousText, previousCount, 1200);
-
-      if (startedAfterEnter) {
-        const text = await waitForResponse(previousText, previousCount, timeoutMs)
-          .catch((error) => {
-            throw new Error(`阶段 response：${error instanceof Error ? error.message : String(error)}`);
-          });
-
-        if (!text) {
-          throw new Error("阶段 response：DeepSeek 回复内容为空");
-        }
-
-        return text;
-      }
-
-      submitClosestForm(input);
-      await getApi().sleep(500);
-
-      const startedAfterSubmit = await waitForSendStarted(previousText, previousCount, 1200);
-
-      if (startedAfterSubmit) {
-        const text = await waitForResponse(previousText, previousCount, timeoutMs)
-          .catch((error) => {
-            throw new Error(`阶段 response：${error instanceof Error ? error.message : String(error)}`);
-          });
-
-        if (!text) {
-          throw new Error("阶段 response：DeepSeek 回复内容为空");
-        }
-
-        return text;
-      }
-
-      const retryButton = findSendButton();
-
-      if (retryButton && retryButton !== sendButton) {
-        dispatchMouseClick(retryButton);
-      }
-
-      const startedAfterRetry = await waitForSendStarted(previousText, previousCount, 1500);
-
-      if (!startedAfterRetry) {
-        throw new Error(
-          `阶段 send_start：已填入内容，但点击/回车/表单提交都未触发发送。候选：${JSON.stringify(describeTopButtonCandidates(input))}`
-        );
-      }
-    }
-
-    const text = await waitForResponse(previousText, previousCount, timeoutMs)
-      .catch((error) => {
-        throw new Error(`阶段 response：${error instanceof Error ? error.message : String(error)}`);
-      });
-
-    if (!text) {
-      throw new Error("阶段 response：DeepSeek 回复内容为空");
-    }
-
-    return text;
+    return {
+      runId,
+      status: "sent",
+      message: "已发送到 DeepSeek，回复将由页面监听器更新",
+      clickTarget: describeButton(sendButton, input)
+    };
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -700,9 +760,9 @@
       return false;
     }
 
-    if (message?.type === "HAI_MEETING_DEEPSEEK_SEND_PROMPT") {
-      sendPrompt(message.prompt, message.timeoutMs)
-        .then((text) => sendResponse({ ok: true, text }))
+    if (message?.type === "HAI_MEETING_DEEPSEEK_SEND_PROMPT_V8") {
+      sendPrompt(message.prompt, message.runId)
+        .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) => {
           sendResponse({
             ok: false,

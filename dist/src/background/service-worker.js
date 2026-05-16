@@ -193,8 +193,13 @@ async function findReadyProviderTab(providerId) {
   };
 }
 
-async function sendPromptToProvider({ providerId, providerName, storageKey, messageType, prompt }) {
+function createRunId(providerId) {
+  return `${providerId}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function sendPromptToProvider({ providerId, providerName, storageKey, messageType, prompt, runId }) {
   const text = prompt?.trim();
+  const currentRunId = runId || createRunId(providerId);
 
   if (!text) {
     return {
@@ -207,8 +212,9 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
     [storageKey]: {
       status: "running",
       prompt: text,
+      runId: currentRunId,
       updatedAt: new Date().toISOString(),
-      message: `正在发送到 ${providerName}，并等待回复...`
+      message: `正在发送到 ${providerName}，等待页面监听器捕获回复...`
     }
   });
 
@@ -219,6 +225,7 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
       [storageKey]: {
         status: "failure",
         prompt: text,
+        runId: currentRunId,
         updatedAt: new Date().toISOString(),
         message: readyTab.error,
         result: readyTab
@@ -227,10 +234,12 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
     return readyTab;
   }
 
+  await injectProviderScripts(readyTab.tab.id, readyTab.provider);
+
   const response = await sendTabMessage(readyTab.tab.id, {
     type: messageType,
     prompt: text,
-    timeoutMs: 120000
+    runId: currentRunId
   });
 
   if (!response?.ok) {
@@ -245,6 +254,7 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
       [storageKey]: {
         status: "failure",
         prompt: text,
+        runId: currentRunId,
         updatedAt: new Date().toISOString(),
         message: result.error,
         result
@@ -258,17 +268,20 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
     ok: true,
     providerId,
     providerName,
+    runId: currentRunId,
     tabId: readyTab.tab.id,
     title: readyTab.tab.title,
-    text: response.text
+    status: response.status || "sent",
+    message: response.message || `已发送到 ${providerName}，等待页面监听器捕获回复`
   };
 
   await chrome.storage.local.set({
     [storageKey]: {
-      status: "success",
+      status: "running",
       prompt: text,
+      runId: currentRunId,
       updatedAt: new Date().toISOString(),
-      message: response.text,
+      message: result.message,
       result
     }
   });
@@ -276,33 +289,36 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
   return result;
 }
 
-async function sendPromptToChatGPT(prompt) {
+async function sendPromptToChatGPT(prompt, runId) {
   return sendPromptToProvider({
     providerId: "chatgpt",
     providerName: "ChatGPT",
     storageKey: "lastChatGPTResult",
-    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT",
-    prompt
+    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT_V9",
+    prompt,
+    runId
   });
 }
 
-async function sendPromptToGemini(prompt) {
+async function sendPromptToGemini(prompt, runId) {
   return sendPromptToProvider({
     providerId: "gemini",
     providerName: "Gemini",
     storageKey: "lastGeminiResult",
-    messageType: "HAI_MEETING_GEMINI_SEND_PROMPT",
-    prompt
+    messageType: "HAI_MEETING_GEMINI_SEND_PROMPT_V8",
+    prompt,
+    runId
   });
 }
 
-async function sendPromptToDeepSeek(prompt) {
+async function sendPromptToDeepSeek(prompt, runId) {
   return sendPromptToProvider({
     providerId: "deepseek",
     providerName: "DeepSeek",
     storageKey: "lastDeepSeekResult",
-    messageType: "HAI_MEETING_DEEPSEEK_SEND_PROMPT",
-    prompt
+    messageType: "HAI_MEETING_DEEPSEEK_SEND_PROMPT_V8",
+    prompt,
+    runId
   });
 }
 
@@ -326,9 +342,9 @@ async function sendPromptToAllProviders(prompt) {
   });
 
   const entries = await Promise.all([
-    sendPromptToChatGPT(text).then((result) => ["chatgpt", result]),
-    sendPromptToGemini(text).then((result) => ["gemini", result]),
-    sendPromptToDeepSeek(text).then((result) => ["deepseek", result])
+    sendPromptToChatGPT(text, createRunId("chatgpt")).then((result) => ["chatgpt", result]),
+    sendPromptToGemini(text, createRunId("gemini")).then((result) => ["gemini", result]),
+    sendPromptToDeepSeek(text, createRunId("deepseek")).then((result) => ["deepseek", result])
   ]);
   const results = Object.fromEntries(entries);
   const ok = Object.values(results).some((result) => result.ok);
@@ -389,7 +405,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "HAI_MEETING_SEND_CHATGPT_PROMPT") {
-    sendPromptToChatGPT(message.prompt)
+    sendPromptToChatGPT(message.prompt, message.runId)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({
@@ -402,7 +418,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "HAI_MEETING_SEND_GEMINI_PROMPT") {
-    sendPromptToGemini(message.prompt)
+    sendPromptToGemini(message.prompt, message.runId)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({
@@ -415,7 +431,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "HAI_MEETING_SEND_DEEPSEEK_PROMPT") {
-    sendPromptToDeepSeek(message.prompt)
+    sendPromptToDeepSeek(message.prompt, message.runId)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({

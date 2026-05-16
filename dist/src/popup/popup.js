@@ -22,6 +22,34 @@ const deepseekPrompt = document.querySelector("#deepseek-prompt");
 const sendDeepSeekButton = document.querySelector("#send-deepseek-button");
 const deepseekResult = document.querySelector("#deepseek-result");
 
+const liveResponseKeys = {
+  chatgpt: "liveResponse_chatgpt",
+  gemini: "liveResponse_gemini",
+  deepseek: "liveResponse_deepseek"
+};
+
+const providerStorageKeys = {
+  chatgpt: "lastChatGPTResult",
+  gemini: "lastGeminiResult",
+  deepseek: "lastDeepSeekResult"
+};
+
+const providerResultSetters = {
+  chatgpt: setChatGPTResult,
+  gemini: setGeminiResult,
+  deepseek: setDeepSeekResult
+};
+
+const allProviderElements = {
+  chatgpt: allChatGPTResult,
+  gemini: allGeminiResult,
+  deepseek: allDeepSeekResult
+};
+
+const activeProviderRuns = new Map();
+let activeAllRunIds = {};
+let activeAllPrompt = "";
+
 function statusLabel(status) {
   const labels = {
     ready: "可用",
@@ -53,6 +81,167 @@ function renderError(error) {
   providerList.innerHTML = `<div class="error">${error}</div>`;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+}
+
+function isTableSeparator(line) {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function renderTable(lines) {
+  const rows = lines
+    .filter((line) => !isTableSeparator(line))
+    .map((line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim()));
+
+  if (rows.length === 0) {
+    return "";
+  }
+
+  const [head, ...body] = rows;
+  const headHtml = head.map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join("");
+  const bodyHtml = body
+    .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`)
+    .join("");
+
+  return `<div class="md-table-wrap"><table><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`;
+}
+
+function markdownToHtml(markdown) {
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let paragraph = [];
+  let list = [];
+  let orderedList = [];
+  let table = [];
+  let codeBlock = [];
+  let inCodeBlock = false;
+
+  const flushParagraph = () => {
+    if (paragraph.length > 0) {
+      html.push(`<p>${renderInlineMarkdown(paragraph.join(" "))}</p>`);
+      paragraph = [];
+    }
+  };
+
+  const flushList = () => {
+    if (list.length > 0) {
+      html.push(`<ul>${list.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ul>`);
+      list = [];
+    }
+
+    if (orderedList.length > 0) {
+      html.push(`<ol>${orderedList.map((item) => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</ol>`);
+      orderedList = [];
+    }
+  };
+
+  const flushTable = () => {
+    if (table.length > 0) {
+      html.push(renderTable(table));
+      table = [];
+    }
+  };
+
+  const flushCodeBlock = () => {
+    if (codeBlock.length > 0) {
+      html.push(`<pre><code>${escapeHtml(codeBlock.join("\n"))}</code></pre>`);
+      codeBlock = [];
+    }
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCodeBlock) {
+        flushCodeBlock();
+        inCodeBlock = false;
+      } else {
+        flushParagraph();
+        flushList();
+        flushTable();
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeBlock.push(line);
+      continue;
+    }
+
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      continue;
+    }
+
+    if (trimmed.includes("|") && (isTableSeparator(trimmed) || table.length > 0 || /^\|.+\|$/.test(trimmed))) {
+      flushParagraph();
+      flushList();
+      table.push(trimmed);
+      continue;
+    }
+
+    flushTable();
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const level = Math.min(heading[1].length + 2, 6);
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    const unordered = trimmed.match(/^[-*]\s+(.+)$/);
+    if (unordered) {
+      flushParagraph();
+      orderedList = [];
+      list.push(unordered[1]);
+      continue;
+    }
+
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      list = [];
+      orderedList.push(ordered[1]);
+      continue;
+    }
+
+    if (trimmed.startsWith(">")) {
+      flushParagraph();
+      flushList();
+      html.push(`<blockquote>${renderInlineMarkdown(trimmed.replace(/^>\s?/, ""))}</blockquote>`);
+      continue;
+    }
+
+    paragraph.push(trimmed);
+  }
+
+  flushCodeBlock();
+  flushParagraph();
+  flushList();
+  flushTable();
+
+  return html.join("");
+}
+
 function renderSnapshot(snapshot) {
   const activeProviderName = snapshot.activeTab?.providerName;
   currentPage.textContent = activeProviderName
@@ -72,6 +261,138 @@ function renderSnapshot(snapshot) {
       `
     )
     .join("");
+}
+
+function createRunId(providerId) {
+  const randomPart = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${providerId}-${randomPart}`;
+}
+
+function liveSnapshotToResult(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  if (snapshot.status === "success" && snapshot.text) {
+    return {
+      ok: true,
+      text: snapshot.text,
+      runId: snapshot.runId
+    };
+  }
+
+  if (snapshot.status === "failure") {
+    return {
+      ok: false,
+      error: snapshot.message || "页面监听器返回失败",
+      runId: snapshot.runId
+    };
+  }
+
+  return {
+    pending: true,
+    message: snapshot.message || "已发送，等待页面回复...",
+    runId: snapshot.runId
+  };
+}
+
+async function saveProviderLiveResult(providerId, snapshot) {
+  const storageKey = providerStorageKeys[providerId];
+
+  if (!storageKey || !snapshot) {
+    return;
+  }
+
+  await chrome.storage.local.set({
+    [storageKey]: {
+      status: snapshot.status === "success" ? "success" : snapshot.status || "running",
+      prompt: snapshot.prompt,
+      runId: snapshot.runId,
+      updatedAt: snapshot.updatedAt || new Date().toISOString(),
+      message: snapshot.text || snapshot.message || "",
+      result: liveSnapshotToResult(snapshot)
+    }
+  });
+}
+
+async function handleLiveResponse(providerId, snapshot) {
+  if (!snapshot?.runId) {
+    return;
+  }
+
+  renderProviderLiveSnapshot(providerId, snapshot);
+  await saveProviderLiveResult(providerId, snapshot);
+
+  const singleRunId = activeProviderRuns.get(providerId);
+
+  if (singleRunId === snapshot.runId && snapshot.status === "failure") {
+    activeProviderRuns.delete(providerId);
+  }
+
+  if (activeAllRunIds[providerId] === snapshot.runId) {
+    await updateAllModelProviderResult(providerId, snapshot);
+    return;
+  }
+
+  await updateStoredAllModelProviderResult(providerId, snapshot);
+}
+
+function renderProviderLiveSnapshot(providerId, snapshot) {
+  const setResult = providerResultSetters[providerId];
+
+  if (!setResult) {
+    return;
+  }
+
+  const formatted = formatProviderResult(liveSnapshotToResult(snapshot));
+  setResult(formatted.message, formatted.type);
+}
+
+async function updateAllModelProviderResult(providerId, snapshot) {
+  const result = liveSnapshotToResult(snapshot);
+  const formatted = formatProviderResult(result);
+  setAllProviderResult(allProviderElements[providerId], formatted.message, formatted.type);
+
+  const stored = await chrome.storage.local.get("lastAllModelsResult");
+  const previousResults = stored.lastAllModelsResult?.result?.results ?? {};
+  const nextResults = {
+    ...previousResults,
+    [providerId]: result
+  };
+
+  await saveAllModelsResult(activeAllPrompt || snapshot.prompt || "", nextResults);
+}
+
+async function updateStoredAllModelProviderResult(providerId, snapshot) {
+  const stored = await chrome.storage.local.get("lastAllModelsResult");
+  const last = stored.lastAllModelsResult;
+  const previousResults = last?.result?.results ?? {};
+  const previousProviderResult = previousResults[providerId];
+
+  if (previousProviderResult?.runId !== snapshot.runId) {
+    return;
+  }
+
+  const nextResult = liveSnapshotToResult(snapshot);
+  const nextResults = {
+    ...previousResults,
+    [providerId]: nextResult
+  };
+
+  await saveAllModelsResult(last.prompt || snapshot.prompt || "", nextResults);
+  renderAllModelResults(nextResults);
+}
+
+async function restoreLiveResponses() {
+  const stored = await chrome.storage.local.get(Object.values(liveResponseKeys));
+
+  for (const [providerId, storageKey] of Object.entries(liveResponseKeys)) {
+    const snapshot = stored[storageKey];
+
+    if (snapshot?.runId) {
+      renderProviderLiveSnapshot(providerId, snapshot);
+    }
+  }
 }
 
 async function refreshStatus() {
@@ -109,7 +430,40 @@ async function restoreLastAllModelsResult() {
     return;
   }
 
-  renderAllModelResults(last.result.results);
+  activeAllPrompt = last.prompt || last.result.prompt || "";
+  activeAllRunIds = Object.fromEntries(
+    Object.entries(last.result.results)
+      .filter(([, result]) => result?.runId)
+      .map(([providerId, result]) => [providerId, result.runId])
+  );
+
+  const reconciledResults = await reconcileAllModelsWithLiveResponses(last.result.results);
+  renderAllModelResults(reconciledResults);
+}
+
+async function reconcileAllModelsWithLiveResponses(results) {
+  const stored = await chrome.storage.local.get(Object.values(liveResponseKeys));
+  const nextResults = { ...results };
+  let changed = false;
+
+  for (const [providerId, storageKey] of Object.entries(liveResponseKeys)) {
+    const liveSnapshot = stored[storageKey];
+
+    if (liveSnapshot?.runId && results[providerId]?.runId === liveSnapshot.runId) {
+      const liveResult = liveSnapshotToResult(liveSnapshot);
+
+      if (liveResult?.ok || liveResult?.pending === false || liveSnapshot.status === "success") {
+        nextResults[providerId] = liveResult;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    await saveAllModelsResult(activeAllPrompt, nextResults);
+  }
+
+  return nextResults;
 }
 
 async function restoreLastProviderResult(storageKey, setResult) {
@@ -137,22 +491,22 @@ async function restoreLastProviderResult(storageKey, setResult) {
 }
 
 function setChatGPTResult(message, type = "") {
-  chatgptResult.textContent = message;
+  chatgptResult.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
   chatgptResult.className = `result ${type}`.trim();
 }
 
 function setGeminiResult(message, type = "") {
-  geminiResult.textContent = message;
+  geminiResult.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
   geminiResult.className = `result ${type}`.trim();
 }
 
 function setDeepSeekResult(message, type = "") {
-  deepseekResult.textContent = message;
+  deepseekResult.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
   deepseekResult.className = `result ${type}`.trim();
 }
 
 function setAllProviderResult(element, message, type = "") {
-  element.textContent = message;
+  element.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
   element.className = `result compact ${type}`.trim();
 }
 
@@ -161,6 +515,13 @@ function formatProviderResult(result) {
     return {
       message: "未返回结果",
       type: "failure"
+    };
+  }
+
+  if (result.pending) {
+    return {
+      message: result.message || "正在等待回复...",
+      type: ""
     };
   }
 
@@ -179,6 +540,41 @@ function formatProviderResult(result) {
   };
 }
 
+async function saveAllModelsResult(prompt, results, status = "running") {
+  await chrome.storage.local.set({
+    lastAllModelsResult: {
+      status,
+      prompt,
+      updatedAt: new Date().toISOString(),
+      message: status === "running" ? "三模型运行中" : "三模型运行完成",
+      result: {
+        ok: Object.values(results).some((result) => result?.ok),
+        prompt,
+        updatedAt: new Date().toISOString(),
+        results
+      }
+    }
+  });
+}
+
+function shouldKeepStoredResult(storedResult, nextResult) {
+  return Boolean(storedResult?.ok && !nextResult?.ok);
+}
+
+async function mergeStoredAllModelResults(results) {
+  const stored = await chrome.storage.local.get("lastAllModelsResult");
+  const storedResults = stored.lastAllModelsResult?.result?.results ?? {};
+  const merged = { ...results };
+
+  for (const [providerId, storedResult] of Object.entries(storedResults)) {
+    if (shouldKeepStoredResult(storedResult, merged[providerId])) {
+      merged[providerId] = storedResult;
+    }
+  }
+
+  return merged;
+}
+
 function renderAllModelResults(results) {
   const chatgpt = formatProviderResult(results.chatgpt);
   const gemini = formatProviderResult(results.gemini);
@@ -195,7 +591,8 @@ async function sendToProvider({
   sendButton,
   setResult,
   messageType,
-  providerName
+  providerName,
+  providerId
 }) {
   event.preventDefault();
 
@@ -207,17 +604,21 @@ async function sendToProvider({
   }
 
   sendButton.disabled = true;
-  setResult(`正在发送到 ${providerName}，并等待回复...`, "");
+  const runId = createRunId(providerId);
+  activeProviderRuns.set(providerId, runId);
+  setResult(`正在发送到 ${providerName}，等待页面回复...`, "");
 
   let response;
 
   try {
     response = await chrome.runtime.sendMessage({
       type: messageType,
-      prompt
+      prompt,
+      runId
     });
   } catch (error) {
     sendButton.disabled = false;
+    activeProviderRuns.delete(providerId);
     setResult(
       `发送失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`,
       "failure"
@@ -228,6 +629,7 @@ async function sendToProvider({
   sendButton.disabled = false;
 
   if (!response?.ok) {
+    activeProviderRuns.delete(providerId);
     const errorText = response?.error || "发送失败：插件后台没有返回具体原因";
     const stageText = response?.stage ? `\n阶段：${response.stage}` : "";
     const detailText = response?.detail ? `\n细节：${JSON.stringify(response.detail)}` : "";
@@ -236,7 +638,6 @@ async function sendToProvider({
     return;
   }
 
-  setResult(response.text, "success");
   await refreshStatus();
 }
 
@@ -247,7 +648,8 @@ async function sendToChatGPT(event) {
     sendButton: sendChatGPTButton,
     setResult: setChatGPTResult,
     messageType: "HAI_MEETING_SEND_CHATGPT_PROMPT",
-    providerName: "ChatGPT"
+    providerName: "ChatGPT",
+    providerId: "chatgpt"
   });
 }
 
@@ -258,7 +660,8 @@ async function sendToGemini(event) {
     sendButton: sendGeminiButton,
     setResult: setGeminiResult,
     messageType: "HAI_MEETING_SEND_GEMINI_PROMPT",
-    providerName: "Gemini"
+    providerName: "Gemini",
+    providerId: "gemini"
   });
 }
 
@@ -269,7 +672,8 @@ async function sendToDeepSeek(event) {
     sendButton: sendDeepSeekButton,
     setResult: setDeepSeekResult,
     messageType: "HAI_MEETING_SEND_DEEPSEEK_PROMPT",
-    providerName: "DeepSeek"
+    providerName: "DeepSeek",
+    providerId: "deepseek"
   });
 }
 
@@ -287,38 +691,85 @@ async function sendToAllModels(event) {
   }
 
   sendAllModelsButton.disabled = true;
-  setAllProviderResult(allChatGPTResult, "正在发送到 ChatGPT，并等待回复...", "");
-  setAllProviderResult(allGeminiResult, "正在发送到 Gemini，并等待回复...", "");
-  setAllProviderResult(allDeepSeekResult, "正在发送到 DeepSeek，并等待回复...", "");
+  activeAllPrompt = prompt;
+  activeAllRunIds = {
+    chatgpt: createRunId("chatgpt"),
+    gemini: createRunId("gemini"),
+    deepseek: createRunId("deepseek")
+  };
+  const results = {
+    chatgpt: { pending: true, runId: activeAllRunIds.chatgpt, message: "正在发送到 ChatGPT，等待页面回复..." },
+    gemini: { pending: true, runId: activeAllRunIds.gemini, message: "正在发送到 Gemini，等待页面回复..." },
+    deepseek: { pending: true, runId: activeAllRunIds.deepseek, message: "正在发送到 DeepSeek，等待页面回复..." }
+  };
+  const targets = [
+    {
+      id: "chatgpt",
+      messageType: "HAI_MEETING_SEND_CHATGPT_PROMPT",
+      element: allChatGPTResult,
+      runId: activeAllRunIds.chatgpt
+    },
+    {
+      id: "gemini",
+      messageType: "HAI_MEETING_SEND_GEMINI_PROMPT",
+      element: allGeminiResult,
+      runId: activeAllRunIds.gemini
+    },
+    {
+      id: "deepseek",
+      messageType: "HAI_MEETING_SEND_DEEPSEEK_PROMPT",
+      element: allDeepSeekResult,
+      runId: activeAllRunIds.deepseek
+    }
+  ];
 
-  let response;
+  renderAllModelResults(results);
+  await saveAllModelsResult(prompt, results);
 
-  try {
-    response = await chrome.runtime.sendMessage({
-      type: "HAI_MEETING_SEND_ALL_PROMPT",
-      prompt
-    });
-  } catch (error) {
-    const message = `发送失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`;
-    sendAllModelsButton.disabled = false;
-    setAllProviderResult(allChatGPTResult, message, "failure");
-    setAllProviderResult(allGeminiResult, message, "failure");
-    setAllProviderResult(allDeepSeekResult, message, "failure");
-    return;
-  }
+  const tasks = targets.map(async (target) => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: target.messageType,
+        prompt,
+        runId: target.runId
+      });
 
+      if (response?.ok) {
+        const liveStored = await chrome.storage.local.get(liveResponseKeys[target.id]);
+        const liveSnapshot = liveStored[liveResponseKeys[target.id]];
+
+        if (liveSnapshot?.runId === target.runId && liveSnapshot.status === "success") {
+          results[target.id] = liveSnapshotToResult(liveSnapshot);
+        }
+      } else {
+        results[target.id] = {
+          ok: false,
+          error: response?.error || "发送失败：插件后台没有返回具体原因",
+          stage: response?.stage,
+          detail: response?.detail
+        };
+      }
+    } catch (error) {
+      results[target.id] = {
+        ok: false,
+        error: `发送失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+
+    const mergedResults = await mergeStoredAllModelResults(results);
+    Object.assign(results, mergedResults);
+
+    const formatted = formatProviderResult(results[target.id]);
+    setAllProviderResult(target.element, formatted.message, formatted.type);
+    await saveAllModelsResult(prompt, results);
+  });
+
+  await Promise.allSettled(tasks);
   sendAllModelsButton.disabled = false;
-
-  if (!response?.results) {
-    const message = response?.error || "发送失败：插件后台没有返回三模型结果";
-    setAllProviderResult(allChatGPTResult, message, "failure");
-    setAllProviderResult(allGeminiResult, message, "failure");
-    setAllProviderResult(allDeepSeekResult, message, "failure");
-    await refreshStatus();
-    return;
-  }
-
-  renderAllModelResults(response.results);
+  const mergedResults = await mergeStoredAllModelResults(results);
+  Object.assign(results, mergedResults);
+  renderAllModelResults(results);
+  await saveAllModelsResult(prompt, results, "running");
   await refreshStatus();
 }
 
@@ -327,8 +778,22 @@ allModelsForm.addEventListener("submit", sendToAllModels);
 chatgptForm.addEventListener("submit", sendToChatGPT);
 geminiForm.addEventListener("submit", sendToGemini);
 deepseekForm.addEventListener("submit", sendToDeepSeek);
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local") {
+    return;
+  }
+
+  for (const [providerId, storageKey] of Object.entries(liveResponseKeys)) {
+    if (changes[storageKey]?.newValue) {
+      handleLiveResponse(providerId, changes[storageKey].newValue);
+    }
+  }
+});
+
 refreshStatus();
 restoreLastAllModelsResult();
 restoreLastChatGPTResult();
 restoreLastGeminiResult();
 restoreLastDeepSeekResult();
+restoreLiveResponses();

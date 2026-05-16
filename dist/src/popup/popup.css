@@ -10,14 +10,16 @@
 }
 
 body {
-  width: 360px;
-  min-height: 560px;
+  width: 560px;
+  min-height: 720px;
+  max-height: 760px;
   margin: 0;
   background: #f6f7f4;
+  overflow: auto;
 }
 
 .app {
-  padding: 16px;
+  padding: 18px;
 }
 
 .header {
@@ -159,7 +161,7 @@ p {
 
 textarea {
   width: 100%;
-  min-height: 116px;
+  min-height: 132px;
   resize: vertical;
   border: 1px solid #c5cec1;
   border-radius: 8px;
@@ -201,10 +203,9 @@ textarea:focus {
 
 .result {
   margin-top: 10px;
-  min-height: 68px;
-  max-height: 180px;
+  min-height: 92px;
+  max-height: 300px;
   overflow: auto;
-  white-space: pre-wrap;
   border: 1px solid #e0e5dc;
   border-radius: 8px;
   padding: 10px;
@@ -215,8 +216,8 @@ textarea:focus {
 }
 
 .result.compact {
-  max-height: 140px;
-  min-height: 58px;
+  max-height: 240px;
+  min-height: 92px;
 }
 
 .result.success {
@@ -246,4 +247,93 @@ textarea:focus {
 
 .model-result .result {
   margin-top: 6px;
+}
+
+.result p,
+.result ul,
+.result ol,
+.result blockquote,
+.result pre,
+.result table {
+  margin: 8px 0 0;
+}
+
+.result p:first-child,
+.result ul:first-child,
+.result ol:first-child,
+.result blockquote:first-child,
+.result pre:first-child,
+.result table:first-child {
+  margin-top: 0;
+}
+
+.result h3,
+.result h4,
+.result h5,
+.result h6 {
+  margin: 12px 0 6px;
+  color: #172026;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.result ul,
+.result ol {
+  padding-left: 18px;
+}
+
+.result li + li {
+  margin-top: 4px;
+}
+
+.result code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #e8eee5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.result pre {
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: #172026;
+  color: #f7fbf5;
+}
+
+.result pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.result blockquote {
+  padding-left: 10px;
+  border-left: 3px solid #9fd4b3;
+  color: #4b5b63;
+}
+
+.md-table-wrap {
+  overflow: auto;
+}
+
+.result table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.result th,
+.result td {
+  border: 1px solid #d8ded4;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.result th {
+  background: #eef4ec;
+  color: #172026;
+  font-weight: 700;
 }
