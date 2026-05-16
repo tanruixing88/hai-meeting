@@ -22,14 +22,14 @@
       </section>
 
       <section class="panel" aria-labelledby="all-models-run-title">
-        <h2 id="all-models-run-title">三模型统一发送</h2>
+        <h2 id="all-models-run-title">发起一轮 AI 讨论</h2>
         <form id="all-models-form" class="prompt-form">
           <textarea
             id="all-models-prompt"
             rows="6"
-            placeholder="输入要同时发送给 ChatGPT、Gemini、DeepSeek 的内容"
+            placeholder="输入本轮讨论议题，同时发送给 ChatGPT、Gemini、DeepSeek"
           ></textarea>
-          <button id="send-all-models-button" class="primary-button" type="submit">发送到全部模型</button>
+          <button id="send-all-models-button" class="primary-button" type="submit">发起讨论</button>
         </form>
         <div class="all-results" aria-live="polite">
           <article class="model-result">
@@ -45,6 +45,17 @@
             <div id="all-deepseek-result" class="result compact">等待发送</div>
           </article>
         </div>
+      </section>
+
+      <section class="panel" aria-labelledby="discussion-summary-title">
+        <div class="panel-heading">
+          <h2 id="discussion-summary-title">本轮主持总结</h2>
+          <div class="button-row">
+            <button id="summarize-discussion-button" class="secondary-button" type="button">生成总结</button>
+            <button id="copy-summary-button" class="secondary-button" type="button">复制总结</button>
+          </div>
+        </div>
+        <div id="discussion-summary-result" class="result" aria-live="polite">等待生成本轮总结</div>
       </section>
 
       <section class="panel" aria-labelledby="chatgpt-run-title">

@@ -9,6 +9,9 @@ const sendAllModelsButton = document.querySelector("#send-all-models-button");
 const allChatGPTResult = document.querySelector("#all-chatgpt-result");
 const allGeminiResult = document.querySelector("#all-gemini-result");
 const allDeepSeekResult = document.querySelector("#all-deepseek-result");
+const summarizeDiscussionButton = document.querySelector("#summarize-discussion-button");
+const copySummaryButton = document.querySelector("#copy-summary-button");
+const discussionSummaryResult = document.querySelector("#discussion-summary-result");
 const chatgptForm = document.querySelector("#chatgpt-form");
 const chatgptPrompt = document.querySelector("#chatgpt-prompt");
 const sendChatGPTButton = document.querySelector("#send-chatgpt-button");
@@ -51,6 +54,9 @@ const renderedLiveSignatures = new Map();
 let activeAllRunIds = {};
 let activeAllPrompt = "";
 let activeLiveSyncTimer = null;
+let activeSummaryRunId = "";
+let activeSummaryPrompt = "";
+let latestSummaryText = "";
 
 function statusLabel(status) {
   const labels = {
@@ -324,6 +330,11 @@ async function handleLiveResponse(providerId, snapshot) {
     return;
   }
 
+  if (providerId === "chatgpt" && activeSummaryRunId === snapshot.runId) {
+    await handleDiscussionSummarySnapshot(snapshot);
+    return;
+  }
+
   const signature = createLiveSnapshotSignature(snapshot);
 
   if (renderedLiveSignatures.get(providerId) === signature) {
@@ -386,18 +397,22 @@ async function syncActiveLiveResponses() {
 }
 
 async function syncActiveProviderTabs() {
-  const runIds = new Map();
+  const runEntries = [];
 
   for (const [providerId, runId] of activeProviderRuns.entries()) {
-    runIds.set(providerId, runId);
+    runEntries.push([providerId, runId]);
   }
 
   for (const [providerId, runId] of Object.entries(activeAllRunIds)) {
-    runIds.set(providerId, runId);
+    runEntries.push([providerId, runId]);
   }
 
+  const uniqueRunEntries = Array.from(
+    new Map(runEntries.map(([providerId, runId]) => [`${providerId}:${runId}`, [providerId, runId]])).values()
+  );
+
   await Promise.allSettled(
-    Array.from(runIds.entries())
+    uniqueRunEntries
       .filter(([providerId]) => providerId === "chatgpt")
       .map(([providerId, runId]) => chrome.runtime.sendMessage({
         type: "HAI_MEETING_SYNC_PROVIDER_RESPONSE",
@@ -530,6 +545,38 @@ async function restoreLastAllModelsResult() {
   renderAllModelResults(reconciledResults);
 }
 
+async function restoreLastDiscussionSummary() {
+  const stored = await chrome.storage.local.get("lastDiscussionSummary");
+  const summary = stored.lastDiscussionSummary;
+
+  if (!summary) {
+    return;
+  }
+
+  activeSummaryRunId = summary.status === "running" ? summary.runId || "" : "";
+  activeSummaryPrompt = summary.prompt || "";
+  latestSummaryText = summary.text || "";
+
+  if (summary.status === "success") {
+    setDiscussionSummaryResult(summary.text || "总结为空", "success");
+    return;
+  }
+
+  if (summary.status === "failure") {
+    setDiscussionSummaryResult(summary.message || "总结失败", "failure");
+    return;
+  }
+
+  if (summary.status === "running") {
+    setDiscussionSummaryResult(summary.message || "正在生成本轮总结...", "");
+
+    if (activeSummaryRunId) {
+      activeProviderRuns.set("chatgpt", activeSummaryRunId);
+      ensureActiveLiveSync();
+    }
+  }
+}
+
 async function reconcileAllModelsWithLiveResponses(results) {
   const stored = await chrome.storage.local.get(Object.values(liveResponseKeys));
   const nextResults = { ...results };
@@ -592,6 +639,11 @@ function setGeminiResult(message, type = "", html = "") {
 function setDeepSeekResult(message, type = "", html = "") {
   deepseekResult.innerHTML = type === "success" && html ? html : type === "success" ? markdownToHtml(message) : escapeHtml(message);
   deepseekResult.className = `result ${type}`.trim();
+}
+
+function setDiscussionSummaryResult(message, type = "", html = "") {
+  discussionSummaryResult.innerHTML = type === "success" && html ? html : type === "success" ? markdownToHtml(message) : escapeHtml(message);
+  discussionSummaryResult.className = `result ${type}`.trim();
 }
 
 function setAllProviderResult(element, message, type = "", html = "") {
@@ -673,6 +725,96 @@ function renderAllModelResults(results) {
   setAllProviderResult(allChatGPTResult, chatgpt.message, chatgpt.type, chatgpt.html);
   setAllProviderResult(allGeminiResult, gemini.message, gemini.type, gemini.html);
   setAllProviderResult(allDeepSeekResult, deepseek.message, deepseek.type, deepseek.html);
+}
+
+function getProviderDiscussionText(providerName, result) {
+  if (result?.ok && result.text) {
+    return `${providerName} 回答：\n${result.text}`;
+  }
+
+  if (result?.pending) {
+    return `${providerName} 回答：\n暂未收集到有效回复。`;
+  }
+
+  return `${providerName} 回答：\n不可用：${result?.error || result?.message || "未返回结果"}`;
+}
+
+function buildDiscussionSummaryPrompt(topic, results) {
+  return [
+    "你是这场 AI 讨论的主持人。请根据议题和各位 AI 的回答，生成本轮讨论总结。",
+    "",
+    "要求：",
+    "1. 不要重复粘贴原文，提炼即可。",
+    "2. 区分共识、分歧、可执行结论。",
+    "3. 如果某个模型没有有效回复，直接说明该模型未参与有效讨论，不要编造。",
+    "4. 输出 Markdown。",
+    "",
+    "输出结构：",
+    "## 本轮结论",
+    "## 主要共识",
+    "## 关键分歧",
+    "## 推荐方案",
+    "## 下一步行动",
+    "",
+    `议题：\n${topic}`,
+    "",
+    getProviderDiscussionText("ChatGPT", results.chatgpt),
+    "",
+    getProviderDiscussionText("Gemini", results.gemini),
+    "",
+    getProviderDiscussionText("DeepSeek", results.deepseek)
+  ].join("\n");
+}
+
+async function saveDiscussionSummary(summary) {
+  await chrome.storage.local.set({
+    lastDiscussionSummary: {
+      updatedAt: new Date().toISOString(),
+      ...summary
+    }
+  });
+}
+
+async function handleDiscussionSummarySnapshot(snapshot) {
+  const result = liveSnapshotToResult(snapshot);
+  const formatted = formatProviderResult(result);
+
+  setDiscussionSummaryResult(formatted.message, formatted.type, formatted.html);
+
+  if (result?.ok) {
+    latestSummaryText = result.text || "";
+    activeProviderRuns.delete("chatgpt");
+    activeSummaryRunId = "";
+    await saveDiscussionSummary({
+      status: "success",
+      runId: snapshot.runId,
+      prompt: activeSummaryPrompt || snapshot.prompt || "",
+      text: latestSummaryText,
+      message: latestSummaryText
+    });
+    return;
+  }
+
+  if (snapshot.status === "failure") {
+    activeProviderRuns.delete("chatgpt");
+    activeSummaryRunId = "";
+    await saveDiscussionSummary({
+      status: "failure",
+      runId: snapshot.runId,
+      prompt: activeSummaryPrompt || snapshot.prompt || "",
+      text: "",
+      message: formatted.message
+    });
+    return;
+  }
+
+  await saveDiscussionSummary({
+    status: "running",
+    runId: snapshot.runId,
+    prompt: activeSummaryPrompt || snapshot.prompt || "",
+    text: "",
+    message: formatted.message
+  });
 }
 
 async function sendToProvider({
@@ -865,8 +1007,100 @@ async function sendToAllModels(event) {
   await refreshStatus();
 }
 
+async function summarizeDiscussion() {
+  const stored = await chrome.storage.local.get("lastAllModelsResult");
+  const discussion = stored.lastAllModelsResult?.result;
+  const prompt = activeAllPrompt || stored.lastAllModelsResult?.prompt || discussion?.prompt || "";
+  const results = discussion?.results || {};
+
+  if (!prompt || Object.keys(results).length === 0) {
+    setDiscussionSummaryResult("请先发起一轮讨论，再生成总结。", "failure");
+    return;
+  }
+
+  if (!Object.values(results).some((result) => result?.ok)) {
+    setDiscussionSummaryResult("当前还没有任何模型的有效回复，暂时无法总结。", "failure");
+    return;
+  }
+
+  summarizeDiscussionButton.disabled = true;
+  activeSummaryRunId = createRunId("chatgpt-summary");
+  activeSummaryPrompt = buildDiscussionSummaryPrompt(prompt, results);
+  latestSummaryText = "";
+  activeProviderRuns.set("chatgpt", activeSummaryRunId);
+  ensureActiveLiveSync();
+  setDiscussionSummaryResult("正在请 ChatGPT 生成本轮主持总结...", "");
+
+  await saveDiscussionSummary({
+    status: "running",
+    runId: activeSummaryRunId,
+    prompt: activeSummaryPrompt,
+    text: "",
+    message: "正在请 ChatGPT 生成本轮主持总结..."
+  });
+
+  let response;
+
+  try {
+    response = await chrome.runtime.sendMessage({
+      type: "HAI_MEETING_SEND_CHATGPT_PROMPT",
+      prompt: activeSummaryPrompt,
+      runId: activeSummaryRunId
+    });
+  } catch (error) {
+    activeProviderRuns.delete("chatgpt");
+    const message = `总结失败：插件后台通信异常\n${error instanceof Error ? error.message : String(error)}`;
+    setDiscussionSummaryResult(message, "failure");
+    await saveDiscussionSummary({
+      status: "failure",
+      runId: activeSummaryRunId,
+      prompt: activeSummaryPrompt,
+      text: "",
+      message
+    });
+    activeSummaryRunId = "";
+    summarizeDiscussionButton.disabled = false;
+    return;
+  }
+
+  summarizeDiscussionButton.disabled = false;
+
+  if (!response?.ok) {
+    activeProviderRuns.delete("chatgpt");
+    const message = response?.error || "总结失败：ChatGPT 页面没有返回具体原因";
+    setDiscussionSummaryResult(message, "failure");
+    await saveDiscussionSummary({
+      status: "failure",
+      runId: activeSummaryRunId,
+      prompt: activeSummaryPrompt,
+      text: "",
+      message
+    });
+    activeSummaryRunId = "";
+  }
+}
+
+async function copyDiscussionSummary() {
+  const stored = await chrome.storage.local.get("lastDiscussionSummary");
+  const text = latestSummaryText || stored.lastDiscussionSummary?.text || "";
+
+  if (!text) {
+    setDiscussionSummaryResult("当前没有可复制的总结。", "failure");
+    return;
+  }
+
+  await navigator.clipboard.writeText(text);
+  const previousText = copySummaryButton.textContent;
+  copySummaryButton.textContent = "已复制";
+  window.setTimeout(() => {
+    copySummaryButton.textContent = previousText;
+  }, 1200);
+}
+
 refreshButton.addEventListener("click", refreshStatus);
 allModelsForm.addEventListener("submit", sendToAllModels);
+summarizeDiscussionButton.addEventListener("click", summarizeDiscussion);
+copySummaryButton.addEventListener("click", copyDiscussionSummary);
 chatgptForm.addEventListener("submit", sendToChatGPT);
 geminiForm.addEventListener("submit", sendToGemini);
 deepseekForm.addEventListener("submit", sendToDeepSeek);
@@ -885,6 +1119,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 refreshStatus();
 restoreLastAllModelsResult();
+restoreLastDiscussionSummary();
 restoreLastChatGPTResult();
 restoreLastGeminiResult();
 restoreLastDeepSeekResult();

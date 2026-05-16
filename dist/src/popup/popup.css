@@ -84,6 +84,19 @@ p {
   background: #fbfcfa;
 }
 
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.button-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .provider-list {
   display: grid;
   gap: 10px;
@@ -199,6 +212,29 @@ textarea:focus {
   cursor: not-allowed;
   border-color: #aab4a7;
   background: #aab4a7;
+}
+
+.secondary-button {
+  min-height: 32px;
+  border: 1px solid #c5cec1;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #172026;
+  background: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.secondary-button:hover {
+  background: #eef4ec;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  color: #657079;
+  background: #f1f4ef;
 }
 
 .result {
