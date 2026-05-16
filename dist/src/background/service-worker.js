@@ -19,6 +19,8 @@ const PROVIDERS = [
   }
 ];
 
+const providerRunTabsStorageKey = "providerRunTabs";
+
 function getProviderByUrl(url = "") {
   return PROVIDERS.find((provider) =>
     provider.matchPrefixes.some((matchPrefix) => url.startsWith(matchPrefix))
@@ -32,6 +34,19 @@ async function queryTabs() {
 async function getActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab ?? null;
+}
+
+function getTabById(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        resolve(null);
+        return;
+      }
+
+      resolve(tab ?? null);
+    });
+  });
 }
 
 function sendTabMessage(tabId, message) {
@@ -81,6 +96,73 @@ async function injectProviderScripts(tabId, provider) {
     target: { tabId },
     files: provider.scripts
   });
+}
+
+async function sendProviderMessage(tabId, provider, message) {
+  let response = await sendTabMessage(tabId, message);
+
+  if (response?.ok || response?.status === "missing_context") {
+    return response;
+  }
+
+  await injectProviderScripts(tabId, provider);
+  response = await sendTabMessage(tabId, message);
+
+  return response;
+}
+
+async function rememberProviderRunTab(providerId, runId, tabId) {
+  if (!runId || !tabId) {
+    return;
+  }
+
+  const stored = await chrome.storage.local.get(providerRunTabsStorageKey);
+  const entries = stored[providerRunTabsStorageKey] ?? {};
+  const nextEntries = {
+    ...entries,
+    [runId]: {
+      providerId,
+      tabId,
+      updatedAt: Date.now()
+    }
+  };
+
+  const prunedEntries = Object.fromEntries(
+    Object.entries(nextEntries)
+      .sort(([, first], [, second]) => (second.updatedAt || 0) - (first.updatedAt || 0))
+      .slice(0, 80)
+  );
+
+  await chrome.storage.local.set({
+    [providerRunTabsStorageKey]: prunedEntries
+  });
+}
+
+async function findRememberedRunTab(providerId, runId) {
+  const provider = PROVIDERS.find((candidate) => candidate.id === providerId);
+
+  if (!provider || !runId) {
+    return null;
+  }
+
+  const stored = await chrome.storage.local.get(providerRunTabsStorageKey);
+  const entry = stored[providerRunTabsStorageKey]?.[runId];
+
+  if (entry?.providerId !== providerId || !entry.tabId) {
+    return null;
+  }
+
+  const tab = await getTabById(entry.tabId);
+
+  if (!tab?.id || getProviderByUrl(tab.url)?.id !== providerId) {
+    return null;
+  }
+
+  return {
+    ok: true,
+    tab,
+    provider
+  };
 }
 
 async function detectProviderPage(tabId, provider) {
@@ -275,6 +357,8 @@ async function sendPromptToProvider({ providerId, providerName, storageKey, mess
     message: response.message || `已发送到 ${providerName}，等待页面监听器捕获回复`
   };
 
+  await rememberProviderRunTab(providerId, currentRunId, readyTab.tab.id);
+
   await chrome.storage.local.set({
     [storageKey]: {
       status: "running",
@@ -294,8 +378,29 @@ async function sendPromptToChatGPT(prompt, runId) {
     providerId: "chatgpt",
     providerName: "ChatGPT",
     storageKey: "lastChatGPTResult",
-    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT_V10",
+    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT_V12",
     prompt,
+    runId
+  });
+}
+
+async function syncProviderResponse(providerId, runId) {
+  if (providerId !== "chatgpt") {
+    return {
+      ok: false,
+      error: "当前只支持主动同步 ChatGPT 回复"
+    };
+  }
+
+  const readyTab = await findRememberedRunTab(providerId, runId) ??
+    await findReadyProviderTab(providerId);
+
+  if (!readyTab.ok) {
+    return readyTab;
+  }
+
+  return sendProviderMessage(readyTab.tab.id, readyTab.provider, {
+    type: "HAI_MEETING_CHATGPT_SYNC_RESPONSE_V12",
     runId
   });
 }
@@ -406,6 +511,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message?.type === "HAI_MEETING_SEND_CHATGPT_PROMPT") {
     sendPromptToChatGPT(message.prompt, message.runId)
+      .then((result) => sendResponse(result))
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+
+    return true;
+  }
+
+  if (message?.type === "HAI_MEETING_SYNC_PROVIDER_RESPONSE") {
+    syncProviderResponse(message.providerId, message.runId)
       .then((result) => sendResponse(result))
       .catch((error) => {
         sendResponse({

@@ -47,8 +47,10 @@ const allProviderElements = {
 };
 
 const activeProviderRuns = new Map();
+const renderedLiveSignatures = new Map();
 let activeAllRunIds = {};
 let activeAllPrompt = "";
+let activeLiveSyncTimer = null;
 
 function statusLabel(status) {
   const labels = {
@@ -322,6 +324,13 @@ async function handleLiveResponse(providerId, snapshot) {
     return;
   }
 
+  const signature = createLiveSnapshotSignature(snapshot);
+
+  if (renderedLiveSignatures.get(providerId) === signature) {
+    return;
+  }
+
+  renderedLiveSignatures.set(providerId, signature);
   renderProviderLiveSnapshot(providerId, snapshot);
   await saveProviderLiveResult(providerId, snapshot);
 
@@ -337,6 +346,73 @@ async function handleLiveResponse(providerId, snapshot) {
   }
 
   await updateStoredAllModelProviderResult(providerId, snapshot);
+}
+
+function createLiveSnapshotSignature(snapshot) {
+  return [
+    snapshot.runId || "",
+    snapshot.status || "",
+    snapshot.updatedAt || "",
+    snapshot.text || "",
+    snapshot.message || ""
+  ].join("|");
+}
+
+function hasActiveRunForSnapshot(providerId, snapshot) {
+  return Boolean(snapshot?.runId) &&
+    (activeProviderRuns.get(providerId) === snapshot.runId ||
+      activeAllRunIds[providerId] === snapshot.runId);
+}
+
+async function syncActiveLiveResponses() {
+  const hasActiveSingleRun = activeProviderRuns.size > 0;
+  const hasActiveAllRun = Object.keys(activeAllRunIds).length > 0;
+
+  if (!hasActiveSingleRun && !hasActiveAllRun) {
+    return;
+  }
+
+  await syncActiveProviderTabs();
+
+  const stored = await chrome.storage.local.get(Object.values(liveResponseKeys));
+
+  for (const [providerId, storageKey] of Object.entries(liveResponseKeys)) {
+    const snapshot = stored[storageKey];
+
+    if (hasActiveRunForSnapshot(providerId, snapshot)) {
+      await handleLiveResponse(providerId, snapshot);
+    }
+  }
+}
+
+async function syncActiveProviderTabs() {
+  const runIds = new Map();
+
+  for (const [providerId, runId] of activeProviderRuns.entries()) {
+    runIds.set(providerId, runId);
+  }
+
+  for (const [providerId, runId] of Object.entries(activeAllRunIds)) {
+    runIds.set(providerId, runId);
+  }
+
+  await Promise.allSettled(
+    Array.from(runIds.entries())
+      .filter(([providerId]) => providerId === "chatgpt")
+      .map(([providerId, runId]) => chrome.runtime.sendMessage({
+        type: "HAI_MEETING_SYNC_PROVIDER_RESPONSE",
+        providerId,
+        runId
+      }))
+  );
+}
+
+function ensureActiveLiveSync() {
+  if (activeLiveSyncTimer) {
+    return;
+  }
+
+  activeLiveSyncTimer = window.setInterval(syncActiveLiveResponses, 1000);
 }
 
 function renderProviderLiveSnapshot(providerId, snapshot) {
@@ -387,13 +463,24 @@ async function updateStoredAllModelProviderResult(providerId, snapshot) {
 
 async function restoreLiveResponses() {
   const stored = await chrome.storage.local.get(Object.values(liveResponseKeys));
+  let restoredActiveRun = false;
 
   for (const [providerId, storageKey] of Object.entries(liveResponseKeys)) {
     const snapshot = stored[storageKey];
 
     if (snapshot?.runId) {
       renderProviderLiveSnapshot(providerId, snapshot);
+
+      if (snapshot.status !== "success" && snapshot.status !== "failure") {
+        activeProviderRuns.set(providerId, snapshot.runId);
+        restoredActiveRun = true;
+      }
     }
+  }
+
+  if (restoredActiveRun) {
+    ensureActiveLiveSync();
+    await syncActiveLiveResponses();
   }
 }
 
@@ -609,6 +696,7 @@ async function sendToProvider({
   sendButton.disabled = true;
   const runId = createRunId(providerId);
   activeProviderRuns.set(providerId, runId);
+  ensureActiveLiveSync();
   setResult(`正在发送到 ${providerName}，等待页面回复...`, "");
 
   let response;
@@ -700,6 +788,7 @@ async function sendToAllModels(event) {
     gemini: createRunId("gemini"),
     deepseek: createRunId("deepseek")
   };
+  ensureActiveLiveSync();
   const results = {
     chatgpt: { pending: true, runId: activeAllRunIds.chatgpt, message: "正在发送到 ChatGPT，等待页面回复..." },
     gemini: { pending: true, runId: activeAllRunIds.gemini, message: "正在发送到 Gemini，等待页面回复..." },

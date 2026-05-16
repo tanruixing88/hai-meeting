@@ -1,9 +1,28 @@
 (() => {
-  if (window.haiMeetingChatGPTLoadedV10) {
-    return;
+  const scriptStateKey = "__haiMeetingChatGPTStateV12";
+  const previousState = window[scriptStateKey];
+
+  if (previousState?.cleanup) {
+    try {
+      previousState.cleanup();
+    } catch {
+      // A stale script from a reloaded extension can no longer be trusted.
+    }
   }
 
-  window.haiMeetingChatGPTLoadedV10 = true;
+  const cleanupTasks = [];
+
+  window[scriptStateKey] = {
+    cleanup() {
+      for (const cleanupTask of cleanupTasks.splice(0)) {
+        try {
+          cleanupTask();
+        } catch {
+          // Ignore cleanup failures from stale extension contexts.
+        }
+      }
+    }
+  };
 
   const provider = {
     id: "chatgpt",
@@ -139,8 +158,19 @@
   }
 
   function getExactResponseNodes() {
-    return Array.from(document.querySelectorAll("[data-message-author-role='assistant'][data-message-id]"))
-      .sort((first, second) => {
+    const seen = new Set();
+    const nodes = [];
+
+    for (const element of document.querySelectorAll("[data-message-author-role='assistant']")) {
+      const message = element.closest("[data-message-author-role='assistant']") ?? element;
+
+      if (!seen.has(message)) {
+        seen.add(message);
+        nodes.push(message);
+      }
+    }
+
+    return nodes.sort((first, second) => {
       if (first === second) {
         return 0;
       }
@@ -175,11 +205,62 @@
   }
 
   function getResponseSnapshots() {
-    return getExactResponseNodes().map((node) => ({
-      id: node.getAttribute("data-message-id") || "",
+    return getExactResponseNodes().map((node, index) => ({
+      id: node.getAttribute("data-message-id") ||
+        node.closest("[data-message-id]")?.getAttribute("data-message-id") ||
+        `chatgpt-assistant-${index}`,
       text: normalizeResponseText(getFinalTextFromMessage(node)),
       html: getFinalHtmlFromMessage(node)
     }));
+  }
+
+  function getSyncDiagnostics(run, contextStatus) {
+    const snapshots = getResponseSnapshots();
+    const lastSnapshots = snapshots.slice(-3).map((snapshot) => ({
+      id: snapshot.id,
+      textLength: snapshot.text.length,
+      textPreview: snapshot.text.slice(0, 80),
+      baselineTextLength: run?.baselineMessageTextById?.get(snapshot.id)?.length ?? null,
+      changedFromBaseline: run ? run.baselineMessageTextById.get(snapshot.id) !== snapshot.text : null,
+      valid: isValidResponseText(snapshot.text, run)
+    }));
+    const latestChanged = run
+      ? snapshots.filter((snapshot) => run.baselineMessageTextById.get(snapshot.id) !== snapshot.text).at(-1)
+      : null;
+
+    return {
+      contextStatus,
+      href: window.location.href,
+      title: document.title,
+      activeRunId: activeRun?.runId || "",
+      syncRunId: run?.runId || "",
+      runMatchedActive: Boolean(run && activeRun?.runId === run.runId),
+      assistantNodeCount: snapshots.length,
+      latestChangedTextPreview: latestChanged?.text?.slice(0, 120) || "",
+      latestChangedTextLength: latestChanged?.text?.length || 0,
+      lastSnapshots
+    };
+  }
+
+  function formatSyncDiagnostics(diagnostics) {
+    const lastLines = diagnostics.lastSnapshots.length > 0
+      ? diagnostics.lastSnapshots.map((snapshot, index) =>
+        `${index + 1}. id=${snapshot.id || "(empty)"}，文本长度=${snapshot.textLength}，基线长度=${snapshot.baselineTextLength ?? "无"}，已变化=${snapshot.changedFromBaseline}，有效=${snapshot.valid}，预览=${snapshot.textPreview || "(空)"}`
+      ).join("\n")
+      : "无 assistant 节点";
+
+    return [
+      "ChatGPT 同步诊断：",
+      `上下文状态：${diagnostics.contextStatus}`,
+      `activeRunId：${diagnostics.activeRunId || "(无)"}`,
+      `syncRunId：${diagnostics.syncRunId || "(无)"}`,
+      `是否匹配 activeRun：${diagnostics.runMatchedActive}`,
+      `assistant 节点数：${diagnostics.assistantNodeCount}`,
+      `最新变化文本长度：${diagnostics.latestChangedTextLength}`,
+      `最新变化文本预览：${diagnostics.latestChangedTextPreview || "(空)"}`,
+      "最后 3 个 assistant：",
+      lastLines
+    ].join("\n");
   }
 
   function createMessageTextById(snapshots = getResponseSnapshots()) {
@@ -333,6 +414,7 @@
   }
 
   const liveStorageKey = "liveResponse_chatgpt";
+  const runContextStorageKey = "chatgptRunContext";
   let activeRun = null;
   let observer = null;
   let emitTimer = null;
@@ -344,28 +426,62 @@
   }
 
   function setLiveState(value) {
-    chrome.storage.local.set({
-      [liveStorageKey]: {
-        providerId: provider.id,
-        providerName: provider.name,
-        href: window.location.href,
-        title: document.title,
-        updatedAt: liveUpdatedAt(),
-        ...value
-      }
-    });
+    const snapshot = {
+      providerId: provider.id,
+      providerName: provider.name,
+      href: window.location.href,
+      title: document.title,
+      updatedAt: liveUpdatedAt(),
+      ...value
+    };
+
+    try {
+      chrome.storage.local.set({
+        [liveStorageKey]: snapshot
+      });
+    } catch {
+      return snapshot;
+    }
+
+    return snapshot;
+  }
+
+  function createWaitingStateForRun(run, extra = {}) {
+    return {
+      status: "waiting",
+      runId: run?.runId || "",
+      prompt: run?.prompt || "",
+      text: "",
+      message: "ChatGPT 网页版在后台标签页可能不会及时渲染回复。请打开 ChatGPT 页面后再同步查看。",
+      ...extra
+    };
   }
 
   function beginRun(runId, prompt) {
     window.clearInterval(pollTimer);
     window.clearTimeout(diagnosticTimer);
+    const baselineMessageTextById = createMessageTextById();
+
     activeRun = {
       runId,
       prompt,
-      baselineMessageTextById: createMessageTextById(),
+      baselineMessageTextById,
       lastText: "",
       startedAt: Date.now()
     };
+
+    try {
+      chrome.storage.local.set({
+        [runContextStorageKey]: {
+          runId,
+          prompt,
+          baselineEntries: Array.from(baselineMessageTextById.entries()),
+          startedAt: Date.now()
+        }
+      });
+    } catch {
+      // The next injected instance will rebuild context from the current page.
+    }
 
     setLiveState({
       status: "waiting",
@@ -383,7 +499,7 @@
       }
 
       emitLatestResponse();
-    }, 750);
+    }, 300);
 
     diagnosticTimer = window.setTimeout(() => {
       if (!activeRun?.lastText) {
@@ -392,34 +508,142 @@
           runId,
           prompt,
           text: "",
-          message: "ChatGPT 还在输出中..."
+          message: "ChatGPT 网页版在后台标签页可能不会及时渲染回复。请打开 ChatGPT 页面后再同步查看。"
         });
       }
     }, 8000);
   }
 
-  function emitLatestResponse() {
-    if (!activeRun) {
-      return;
+  function emitLatestResponseForRun(run, { force = false } = {}) {
+    if (!run) {
+      return null;
     }
 
-    const snapshot = getLatestAssistantSnapshot(activeRun);
+    const snapshot = getLatestAssistantSnapshot(run);
     const text = snapshot?.text ?? "";
 
-    if (!isValidResponseText(text, activeRun) || text === activeRun.lastText) {
-      return;
+    if (!isValidResponseText(text, run) || (!force && text === run.lastText)) {
+      return null;
     }
 
-    activeRun.lastText = text;
+    run.lastText = text;
     window.clearTimeout(diagnosticTimer);
-    setLiveState({
+    return setLiveState({
       status: "success",
-      runId: activeRun.runId,
-      prompt: activeRun.prompt,
+      runId: run.runId,
+      prompt: run.prompt,
       text,
       html: snapshot?.html || "",
       message: text
     });
+  }
+
+  function emitLatestResponse(options = {}) {
+    return emitLatestResponseForRun(activeRun, options);
+  }
+
+  async function getRunForSync(runId) {
+    if (activeRun?.runId === runId) {
+      return {
+        run: activeRun,
+        contextStatus: "activeRun"
+      };
+    }
+
+    const stored = await chrome.storage.local.get(runContextStorageKey);
+    const context = stored[runContextStorageKey];
+
+    if (context?.runId !== runId) {
+      return {
+        run: null,
+        contextStatus: context?.runId ? "storedRunIdMismatch" : "missingStoredContext"
+      };
+    }
+
+    return {
+      run: {
+        runId: context.runId,
+        prompt: context.prompt || "",
+        baselineMessageTextById: new Map(context.baselineEntries || []),
+        lastText: "",
+        startedAt: context.startedAt || Date.now()
+      },
+      contextStatus: "storedContext"
+    };
+  }
+
+  async function syncLatestResponse(runId) {
+    const { run, contextStatus } = await getRunForSync(runId);
+
+    if (!run) {
+      const diagnostics = getSyncDiagnostics(null, contextStatus);
+
+      return {
+        ok: false,
+        status: "missing_context",
+        message: "ChatGPT 当前没有匹配的运行上下文",
+        diagnostics,
+        snapshot: setLiveState(createWaitingStateForRun({
+          runId,
+          prompt: ""
+        }, {
+          diagnostics
+        }))
+      };
+    }
+
+    let snapshot = emitLatestResponseForRun(run, { force: true });
+
+    if (!snapshot) {
+      await nudgeResponseRendering();
+      snapshot = emitLatestResponseForRun(run, { force: true });
+    }
+
+    if (snapshot?.status === "success") {
+      return {
+        ok: true,
+        snapshot
+      };
+    }
+
+    const diagnostics = getSyncDiagnostics(run, contextStatus);
+
+    return {
+      ok: true,
+      snapshot: setLiveState(createWaitingStateForRun(run, {
+        diagnostics
+      }))
+    };
+  }
+
+  async function nudgeResponseRendering() {
+    const turns = Array.from(document.querySelectorAll("[data-turn='assistant'], [data-message-author-role='assistant']"));
+    const latestTurn = turns.at(-1);
+
+    latestTurn?.scrollIntoView?.({
+      block: "end",
+      inline: "nearest"
+    });
+
+    const scrollTargets = [
+      document.scrollingElement,
+      document.documentElement,
+      document.body,
+      ...Array.from(document.querySelectorAll("[class*='scroll'], [data-testid*='conversation'], main"))
+    ].filter(Boolean);
+
+    for (const target of scrollTargets) {
+      try {
+        target.scrollTop = target.scrollHeight;
+        target.dispatchEvent(new Event("scroll", { bubbles: true }));
+      } catch {
+        // Some page-owned scroll containers are read-only or detached.
+      }
+    }
+
+    window.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("scroll"));
+    await getApi().sleep(600);
   }
 
   function scheduleEmitLatestResponse() {
@@ -438,6 +662,8 @@
       subtree: true,
       characterData: true
     });
+
+    cleanupTasks.push(() => observer?.disconnect());
   }
 
   ensureResponseObserver();
@@ -472,7 +698,7 @@
     };
   }
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  function handleRuntimeMessage(message, _sender, sendResponse) {
     if (message?.type === "HAI_MEETING_DETECT_PAGE" && message.providerId === provider.id) {
       const inputStatus = window.haiMeetingContentApi.detectInput(provider.inputSelectors);
       sendResponse({
@@ -488,7 +714,7 @@
       return false;
     }
 
-    if (message?.type === "HAI_MEETING_CHATGPT_SEND_PROMPT_V10") {
+    if (message?.type === "HAI_MEETING_CHATGPT_SEND_PROMPT_V12") {
       sendPrompt(message.prompt, message.runId)
         .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) => {
@@ -504,6 +730,26 @@
       return true;
     }
 
+    if (message?.type === "HAI_MEETING_CHATGPT_SYNC_RESPONSE_V12") {
+      syncLatestResponse(message.runId)
+        .then((result) => sendResponse(result))
+        .catch((error) => {
+          sendResponse({
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        });
+      return true;
+    }
+
     return false;
+  }
+
+  chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+  cleanupTasks.push(() => {
+    window.clearTimeout(emitTimer);
+    window.clearInterval(pollTimer);
+    window.clearTimeout(diagnosticTimer);
+    chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
   });
 })();
