@@ -1,9 +1,9 @@
 (() => {
-  if (window.haiMeetingChatGPTLoadedV9) {
+  if (window.haiMeetingChatGPTLoadedV10) {
     return;
   }
 
-  window.haiMeetingChatGPTLoadedV9 = true;
+  window.haiMeetingChatGPTLoadedV10 = true;
 
   const provider = {
     id: "chatgpt",
@@ -150,6 +150,11 @@
   }
 
   function getLatestAssistantText(run = activeRun) {
+    const snapshot = getLatestAssistantSnapshot(run);
+    return snapshot?.text ?? "";
+  }
+
+  function getLatestAssistantSnapshot(run = activeRun) {
     const snapshots = getResponseSnapshots();
     const changedSnapshots = run
       ? snapshots.filter((snapshot) => run.baselineMessageTextById.get(snapshot.id) !== snapshot.text)
@@ -159,17 +164,21 @@
       const text = normalizeResponseText(snapshot.text);
 
       if (isValidResponseText(text, run)) {
-        return text;
+        return {
+          ...snapshot,
+          text
+        };
       }
     }
 
-    return "";
+    return null;
   }
 
   function getResponseSnapshots() {
     return getExactResponseNodes().map((node) => ({
       id: node.getAttribute("data-message-id") || "",
-      text: normalizeResponseText(getFinalTextFromMessage(node))
+      text: normalizeResponseText(getFinalTextFromMessage(node)),
+      html: getFinalHtmlFromMessage(node)
     }));
   }
 
@@ -203,6 +212,92 @@
     }
 
     return "";
+  }
+
+  function getFinalHtmlFromMessage(message) {
+    const markdown = message?.querySelector(".markdown.markdown-new-styling, .markdown, [class*='markdown']");
+
+    if (!markdown) {
+      return "";
+    }
+
+    const clone = markdown.cloneNode(true);
+
+    for (const selector of [
+      "script",
+      "style",
+      "button",
+      "svg",
+      "iframe",
+      ".not-prose",
+      ".not-markdown",
+      "[data-dil-widget-copy-target]",
+      "[aria-label*='复制']",
+      ".select-none"
+    ]) {
+      for (const node of clone.querySelectorAll(selector)) {
+        node.remove();
+      }
+    }
+
+    return sanitizeHtmlFragment(clone);
+  }
+
+  function sanitizeHtmlFragment(root) {
+    const allowedTags = new Set([
+      "p",
+      "br",
+      "strong",
+      "em",
+      "code",
+      "pre",
+      "blockquote",
+      "ul",
+      "ol",
+      "li",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "table",
+      "thead",
+      "tbody",
+      "tr",
+      "th",
+      "td",
+      "hr"
+    ]);
+    const template = document.createElement("template");
+
+    function copyNode(node, parent) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parent.append(document.createTextNode(node.textContent || ""));
+        return;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return;
+      }
+
+      const tagName = node.tagName.toLowerCase();
+      const nextParent = allowedTags.has(tagName)
+        ? document.createElement(tagName)
+        : parent;
+
+      if (allowedTags.has(tagName)) {
+        parent.append(nextParent);
+      }
+
+      for (const child of node.childNodes) {
+        copyNode(child, nextParent);
+      }
+    }
+
+    for (const child of root.childNodes) {
+      copyNode(child, template.content);
+    }
+
+    return template.innerHTML.trim();
   }
 
   function getElementText(element) {
@@ -297,7 +392,7 @@
           runId,
           prompt,
           text: "",
-          message: `仍在等待 ChatGPT 回复。诊断：${JSON.stringify(getExtractionDiagnostics())}`
+          message: "ChatGPT 还在输出中..."
         });
       }
     }, 8000);
@@ -308,7 +403,8 @@
       return;
     }
 
-    const text = getLatestAssistantText(activeRun);
+    const snapshot = getLatestAssistantSnapshot(activeRun);
+    const text = snapshot?.text ?? "";
 
     if (!isValidResponseText(text, activeRun) || text === activeRun.lastText) {
       return;
@@ -321,27 +417,8 @@
       runId: activeRun.runId,
       prompt: activeRun.prompt,
       text,
+      html: snapshot?.html || "",
       message: text
-    });
-  }
-
-  function getExtractionDiagnostics() {
-    const selectors = [
-      "article[data-testid*='conversation-turn']",
-      "[data-message-author-role='assistant'][data-message-id]",
-      "[data-message-author-role='assistant'][data-message-id] .markdown",
-      "[data-message-author-role='assistant'][data-message-id] .markdown p"
-    ];
-
-    return selectors.map((selector) => {
-      const elements = Array.from(document.querySelectorAll(selector));
-      const lastText = getElementText(elements.at(-1));
-
-      return {
-        selector,
-        count: elements.length,
-        lastText: lastText.slice(0, 80)
-      };
     });
   }
 
@@ -411,7 +488,7 @@
       return false;
     }
 
-    if (message?.type === "HAI_MEETING_CHATGPT_SEND_PROMPT_V9") {
+    if (message?.type === "HAI_MEETING_CHATGPT_SEND_PROMPT_V10") {
       sendPrompt(message.prompt, message.runId)
         .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) => {

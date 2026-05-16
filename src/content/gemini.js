@@ -1,9 +1,9 @@
 (() => {
-  if (window.haiMeetingGeminiLoadedV8) {
+  if (window.haiMeetingGeminiLoadedV9) {
     return;
   }
 
-  window.haiMeetingGeminiLoadedV8 = true;
+  window.haiMeetingGeminiLoadedV9 = true;
 
   const provider = {
     id: "gemini",
@@ -22,19 +22,6 @@
       "button.send-button",
       "button mat-icon[data-mat-icon-name='send']",
       "button mat-icon[fonticon='send']"
-    ],
-    responseSelectors: [
-      "message-content .markdown[aria-busy='false'] p",
-      "message-content .markdown[aria-busy='false']",
-      "model-response",
-      "model-response message-content",
-      "model-response .markdown",
-      "model-response [class*='markdown']",
-      "message-content",
-      ".model-response-text",
-      ".response-content",
-      ".markdown",
-      "div[class*='response']"
     ]
   };
 
@@ -127,49 +114,10 @@
     }) ?? null;
   }
 
-  function getResponseElements() {
-    const seen = new Set();
-    const elements = [];
-
-    for (const selector of provider.responseSelectors) {
-      for (const element of document.querySelectorAll(selector)) {
-        const text = getFinalTextFromResponse(element);
-
-        if (!seen.has(element) && isValidResponseText(text, activeRun)) {
-          seen.add(element);
-          elements.push(element);
-        }
-      }
-    }
-
-    return elements.sort((first, second) => {
-      if (first === second) {
-        return 0;
-      }
-
-      return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
-    });
-  }
-
   function getExactResponseNodes() {
-    const selectors = [
-      "message-content .markdown[aria-busy='false'] p",
-      "message-content .markdown[aria-busy='false']",
-      "message-content"
-    ];
-    const seen = new Set();
-    const nodes = [];
-
-    for (const selector of selectors) {
-      for (const element of document.querySelectorAll(selector)) {
-        if (!seen.has(element)) {
-          seen.add(element);
-          nodes.push(element);
-        }
-      }
-    }
-
-    return nodes.sort((first, second) => {
+    return Array.from(document.querySelectorAll(
+      "structured-content-container.model-response-text message-content[id^='message-content-id-'], message-content[id^='message-content-id-']"
+    )).sort((first, second) => {
       if (first === second) {
         return 0;
       }
@@ -178,61 +126,161 @@
     });
   }
 
-  function getNewResponseElements(previousElements) {
-    return getResponseElements().filter((element) => !previousElements.has(element));
+  function getLastResponseText() {
+    return getLatestGeminiSnapshot(activeRun)?.text ?? "";
   }
 
-  function getCurrentTurnResponseElement(previousElements, previousLastElement, previousLastText) {
-    const newElements = getNewResponseElements(previousElements);
+  function getLatestGeminiSnapshot(run = activeRun) {
+    const snapshots = getResponseSnapshots();
+    const changedSnapshots = run
+      ? snapshots.filter((snapshot) => run.baselineMessageTextById.get(snapshot.id) !== snapshot.text)
+      : snapshots;
 
-    if (newElements.length > 0) {
-      return newElements.at(-1);
-    }
+    for (const snapshot of changedSnapshots.slice().reverse()) {
+      const text = normalizeResponseText(snapshot.text);
 
-    const elements = getResponseElements();
-    const last = elements.at(-1);
-    const lastText = getFinalTextFromResponse(last);
-
-    if (last && (last !== previousLastElement || lastText !== previousLastText)) {
-      return last;
+      if (isValidResponseText(text, run)) {
+        return {
+          ...snapshot,
+          text
+        };
+      }
     }
 
     return null;
   }
 
-  function getLastResponseText() {
-    const exactNodes = getExactResponseNodes();
-    const newExactNodes = activeRun ? exactNodes.slice(activeRun.baselineNodeCount) : exactNodes;
+  function getResponseSnapshots() {
+    return getExactResponseNodes().map((node, index) => {
+      const id = node.getAttribute("id") || `gemini-message-${index}`;
 
-    for (const node of newExactNodes.slice().reverse()) {
-      const text = getFinalTextFromResponse(node);
-
-      if (isValidResponseText(text, activeRun)) {
-        return text;
-      }
-    }
-
-    const elements = getResponseElements();
-    const texts = elements
-      .map((element) => getFinalTextFromResponse(element))
-      .filter((text) => isValidResponseText(text, activeRun));
-
-    return texts.at(-1) ?? "";
+      return {
+        id,
+        text: normalizeResponseText(getFinalTextFromMessage(node)),
+        html: getFinalHtmlFromMessage(node)
+      };
+    });
   }
 
-  function getFinalTextFromResponse(element) {
-    if (!element) {
+  function createMessageTextById(snapshots = getResponseSnapshots()) {
+    return new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.text]));
+  }
+
+  function getFinalTextFromMessage(message) {
+    const markdown = getMessageMarkdown(message);
+
+    if (!markdown) {
       return "";
     }
 
-    const candidates = Array.from(element.querySelectorAll("message-content, .markdown, [class*='markdown'], [class*='response-text']"))
-      .filter((candidate) => getElementText(candidate));
+    return normalizeResponseText(stripGeminiChromeText(getElementText(createReadableClone(markdown))));
+  }
 
-    const text = candidates.length > 0
-      ? getElementText(candidates.at(-1))
-      : getElementText(element);
+  function getFinalHtmlFromMessage(message) {
+    const markdown = getMessageMarkdown(message);
 
-    return normalizeResponseText(stripGeminiChromeText(text ?? ""));
+    if (!markdown) {
+      return "";
+    }
+
+    return sanitizeHtmlFragment(createReadableClone(markdown));
+  }
+
+  function getMessageMarkdown(message) {
+    return message?.querySelector(".markdown.markdown-main-panel, .markdown[aria-busy='false'], [class*='markdown']")
+      ?? null;
+  }
+
+  function createReadableClone(element) {
+    const clone = element.cloneNode(true);
+
+    for (const selector of [
+      "script",
+      "style",
+      "button",
+      "svg",
+      "iframe",
+      "mat-icon",
+      ".buttons",
+      ".code-block-decoration",
+      ".avatar-gutter",
+      "bard-avatar",
+      "sources-list",
+      ".screen-reader-model-response-label",
+      ".thoughts-container",
+      ".response-footer",
+      "sensitive-memories-banner",
+      "[aria-label*='复制']",
+      "[aria-label*='下载']",
+      "[aria-label*='copy' i]",
+      "[aria-label*='download' i]"
+    ]) {
+      for (const node of clone.querySelectorAll(selector)) {
+        node.remove();
+      }
+    }
+
+    return clone;
+  }
+
+  function sanitizeHtmlFragment(root) {
+    const allowedTags = new Set([
+      "p",
+      "br",
+      "strong",
+      "b",
+      "em",
+      "i",
+      "code",
+      "pre",
+      "blockquote",
+      "ul",
+      "ol",
+      "li",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "table",
+      "thead",
+      "tbody",
+      "tr",
+      "th",
+      "td",
+      "hr"
+    ]);
+    const template = document.createElement("template");
+
+    function copyNode(node, parent) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parent.append(document.createTextNode(node.textContent || ""));
+        return;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return;
+      }
+
+      const tagName = node.tagName.toLowerCase();
+      const normalizedTagName = tagName === "b" ? "strong" : tagName === "i" ? "em" : tagName;
+      const nextParent = allowedTags.has(tagName)
+        ? document.createElement(normalizedTagName)
+        : parent;
+
+      if (allowedTags.has(tagName)) {
+        parent.append(nextParent);
+      }
+
+      for (const child of node.childNodes) {
+        copyNode(child, nextParent);
+      }
+    }
+
+    for (const child of root.childNodes) {
+      copyNode(child, template.content);
+    }
+
+    return template.innerHTML.trim();
   }
 
   function getElementText(element) {
@@ -302,8 +350,7 @@
     activeRun = {
       runId,
       prompt,
-      baselineNodeCount: getExactResponseNodes().length,
-      baselineText: getLastResponseText(),
+      baselineMessageTextById: createMessageTextById(),
       lastText: "",
       startedAt: Date.now()
     };
@@ -333,7 +380,7 @@
           runId,
           prompt,
           text: "",
-          message: `仍在等待 Gemini 回复。诊断：${JSON.stringify(getExtractionDiagnostics())}`
+          message: "Gemini 还在输出中..."
         });
       }
     }, 8000);
@@ -344,7 +391,8 @@
       return;
     }
 
-    const text = getLastResponseText();
+    const snapshot = getLatestGeminiSnapshot(activeRun);
+    const text = snapshot?.text ?? "";
 
     if (!isValidResponseText(text, activeRun) || text === activeRun.lastText) {
       return;
@@ -357,29 +405,8 @@
       runId: activeRun.runId,
       prompt: activeRun.prompt,
       text,
+      html: snapshot?.html || "",
       message: text
-    });
-  }
-
-  function getExtractionDiagnostics() {
-    const selectors = [
-      "model-response",
-      "model-response message-content",
-      "message-content",
-      ".model-response-text",
-      ".markdown",
-      "div[class*='response']"
-    ];
-
-    return selectors.map((selector) => {
-      const elements = Array.from(document.querySelectorAll(selector));
-      const lastText = getElementText(elements.at(-1));
-
-      return {
-        selector,
-        count: elements.length,
-        lastText: lastText.slice(0, 80)
-      };
     });
   }
 
@@ -449,7 +476,7 @@
       return false;
     }
 
-    if (message?.type === "HAI_MEETING_GEMINI_SEND_PROMPT_V8") {
+    if (message?.type === "HAI_MEETING_GEMINI_SEND_PROMPT_V9") {
       sendPrompt(message.prompt, message.runId)
         .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) => {

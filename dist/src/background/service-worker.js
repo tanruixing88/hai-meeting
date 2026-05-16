@@ -294,7 +294,7 @@ async function sendPromptToChatGPT(prompt, runId) {
     providerId: "chatgpt",
     providerName: "ChatGPT",
     storageKey: "lastChatGPTResult",
-    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT_V9",
+    messageType: "HAI_MEETING_CHATGPT_SEND_PROMPT_V10",
     prompt,
     runId
   });
@@ -305,7 +305,7 @@ async function sendPromptToGemini(prompt, runId) {
     providerId: "gemini",
     providerName: "Gemini",
     storageKey: "lastGeminiResult",
-    messageType: "HAI_MEETING_GEMINI_SEND_PROMPT_V8",
+    messageType: "HAI_MEETING_GEMINI_SEND_PROMPT_V9",
     prompt,
     runId
   });
@@ -316,7 +316,7 @@ async function sendPromptToDeepSeek(prompt, runId) {
     providerId: "deepseek",
     providerName: "DeepSeek",
     storageKey: "lastDeepSeekResult",
-    messageType: "HAI_MEETING_DEEPSEEK_SEND_PROMPT_V8",
+    messageType: "HAI_MEETING_DEEPSEEK_SEND_PROMPT_V9",
     prompt,
     runId
   });

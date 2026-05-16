@@ -1,9 +1,9 @@
 (() => {
-  if (window.haiMeetingDeepSeekLoadedV8) {
+  if (window.haiMeetingDeepSeekLoadedV9) {
     return;
   }
 
-  window.haiMeetingDeepSeekLoadedV8 = true;
+  window.haiMeetingDeepSeekLoadedV9 = true;
 
   const provider = {
     id: "deepseek",
@@ -27,31 +27,6 @@
       "[role='button'][aria-label*='发送']",
       "[class*='send']",
       "[class*='submit']"
-    ],
-    responseSelectors: [
-      "[data-role='assistant']",
-      "[data-message-author-role='assistant']",
-      "[class*='assistant']",
-      ".markdown",
-      ".ds-markdown",
-      "[class*='markdown']",
-      "[class*='message-content']",
-      "[class*='chat-message']",
-      "[class*='answer']"
-    ],
-    reasoningSelectors: [
-      "[class*='reason']",
-      "[class*='thinking']",
-      "[class*='think']",
-      "[class*='cot']",
-      "[data-testid*='reason']",
-      "[data-testid*='think']"
-    ],
-    finalAnswerSelectors: [
-      ".ds-markdown",
-      ".markdown",
-      "[class*='markdown']",
-      "[class*='answer']"
     ]
   };
 
@@ -461,36 +436,16 @@
     }
   }
 
-  function getResponseElements() {
-    const seen = new Set();
-    const elements = [];
-
-    for (const selector of provider.responseSelectors) {
-      for (const element of document.querySelectorAll(selector)) {
-        const text = getFinalAnswerTextFromResponse(element);
-
-        if (!seen.has(element) && getApi().isVisible(element) && isValidFinalAnswerText(text)) {
-          seen.add(element);
-          elements.push(element);
-        }
-      }
-    }
-
-    return elements.sort((first, second) => {
+  function getExactResponseNodes() {
+    return Array.from(document.querySelectorAll(".ds-message"))
+      .filter((message) => message.querySelector(".ds-markdown.ds-assistant-message-main-content"))
+      .sort((first, second) => {
       if (first === second) {
         return 0;
       }
 
       return first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
     });
-  }
-
-  function getNewResponseElements(previousElements) {
-    return getResponseElements().filter((element) => !previousElements.has(element));
-  }
-
-  function isInsideReasoning(element) {
-    return provider.reasoningSelectors.some((selector) => Boolean(element.closest(selector)));
   }
 
   function isProbablyReasoningText(text) {
@@ -535,7 +490,7 @@
   }
 
   function normalizeResponseText(text) {
-    return text
+    return String(text || "")
       .replace(/\r\n/g, "\n")
       .split("\n")
       .map((line) => line.trim())
@@ -544,65 +499,165 @@
       .trim();
   }
 
-  function stripReasoningText(text) {
-    const normalized = normalizeResponseText(text);
-    const markerPatterns = [
-      /(?:^|\n)\s*(?:最终答案|最终回复|正式回复|回复|回答)\s*[:：]\s*/i,
-      /(?:^|\n)\s*(?:Final answer|Answer)\s*[:：]\s*/i
-    ];
+  function getLatestDeepSeekSnapshot(run = activeRun) {
+    const snapshots = getResponseSnapshots();
+    const changedSnapshots = run
+      ? snapshots.filter((snapshot) => run.baselineMessageTextById.get(snapshot.id) !== snapshot.text)
+      : snapshots;
 
-    for (const pattern of markerPatterns) {
-      const parts = normalized.split(pattern);
+    for (const snapshot of changedSnapshots.slice().reverse()) {
+      const text = normalizeResponseText(snapshot.text);
 
-      if (parts.length > 1) {
-        return normalizeResponseText(parts.at(-1));
+      if (isValidFinalAnswerText(text)) {
+        return {
+          ...snapshot,
+          text
+        };
       }
     }
 
-    const paragraphs = normalized.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
-
-    if (paragraphs.length > 1 && paragraphs.slice(0, -1).some(isProbablyReasoningText)) {
-      return normalizeResponseText(paragraphs.at(-1));
-    }
-
-    return normalized;
+    return null;
   }
 
-  function getFinalAnswerTextFromResponse(element) {
-    const finalCandidates = [];
+  function getResponseSnapshots() {
+    return getExactResponseNodes().map((message, index) => {
+      const id = message.closest("[data-virtual-list-item-key]")?.getAttribute("data-virtual-list-item-key") ||
+        message.getAttribute("data-message-id") ||
+        `deepseek-message-${index}`;
 
-    for (const selector of provider.finalAnswerSelectors) {
-      for (const candidate of element.querySelectorAll(selector)) {
-        const text = candidate.innerText?.trim();
+      return {
+        id,
+        text: normalizeResponseText(getFinalAnswerTextFromMessage(message)),
+        html: getFinalAnswerHtmlFromMessage(message)
+      };
+    });
+  }
 
-        if (text && getApi().isVisible(candidate) && !isInsideReasoning(candidate)) {
-          finalCandidates.push(candidate);
-        }
-      }
+  function createMessageTextById(snapshots = getResponseSnapshots()) {
+    return new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.text]));
+  }
+
+  function getFinalAnswerNode(message) {
+    const candidates = Array.from(message.querySelectorAll(".ds-markdown.ds-assistant-message-main-content"))
+      .filter((node) => getElementText(node));
+
+    return candidates.at(-1) ?? null;
+  }
+
+  function getFinalAnswerTextFromMessage(message) {
+    const finalNode = getFinalAnswerNode(message);
+
+    if (!finalNode) {
+      return "";
     }
 
-    if (finalCandidates.length > 0) {
-      return stripReasoningText(finalCandidates.at(-1).innerText ?? "");
+    return normalizeResponseText(getElementText(createReadableClone(finalNode)));
+  }
+
+  function getFinalAnswerHtmlFromMessage(message) {
+    const finalNode = getFinalAnswerNode(message);
+
+    if (!finalNode) {
+      return "";
     }
 
+    return sanitizeHtmlFragment(createReadableClone(finalNode));
+  }
+
+  function createReadableClone(element) {
     const clone = element.cloneNode(true);
 
-    for (const selector of provider.reasoningSelectors) {
-      for (const reasoningNode of clone.querySelectorAll(selector)) {
-        reasoningNode.remove();
+    for (const selector of [
+      "script",
+      "style",
+      "button",
+      "svg",
+      "iframe",
+      ".md-code-block-banner-wrap",
+      ".md-code-block-banner",
+      ".ds-icon",
+      ".ds-focus-ring",
+      ".ds-theme",
+      "[role='button']",
+      "[aria-label*='复制']",
+      "[aria-label*='下载']",
+      "[aria-label*='copy' i]",
+      "[aria-label*='download' i]"
+    ]) {
+      for (const node of clone.querySelectorAll(selector)) {
+        node.remove();
       }
     }
 
-    return stripReasoningText(clone.innerText ?? element.innerText ?? "");
+    return clone;
+  }
+
+  function sanitizeHtmlFragment(root) {
+    const allowedTags = new Set([
+      "p",
+      "br",
+      "strong",
+      "b",
+      "em",
+      "i",
+      "code",
+      "pre",
+      "blockquote",
+      "ul",
+      "ol",
+      "li",
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "table",
+      "thead",
+      "tbody",
+      "tr",
+      "th",
+      "td",
+      "hr"
+    ]);
+    const template = document.createElement("template");
+
+    function copyNode(node, parent) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parent.append(document.createTextNode(node.textContent || ""));
+        return;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        return;
+      }
+
+      const tagName = node.tagName.toLowerCase();
+      const normalizedTagName = tagName === "b" ? "strong" : tagName === "i" ? "em" : tagName;
+      const nextParent = allowedTags.has(tagName)
+        ? document.createElement(normalizedTagName)
+        : parent;
+
+      if (allowedTags.has(tagName)) {
+        parent.append(nextParent);
+      }
+
+      for (const child of node.childNodes) {
+        copyNode(child, nextParent);
+      }
+    }
+
+    for (const child of root.childNodes) {
+      copyNode(child, template.content);
+    }
+
+    return template.innerHTML.trim();
+  }
+
+  function getElementText(element) {
+    return (element?.innerText || element?.textContent || "").trim();
   }
 
   function getLastResponseText() {
-    const elements = getResponseElements();
-    const texts = elements
-      .map((element) => getFinalAnswerTextFromResponse(element))
-      .filter(isValidFinalAnswerText);
-
-    return texts.at(-1) ?? "";
+    return getLatestDeepSeekSnapshot(activeRun)?.text ?? "";
   }
 
   async function waitForSendButtonEnabled(input, timeoutMs = 8000) {
@@ -655,7 +710,7 @@
     activeRun = {
       runId,
       prompt,
-      baselineText: getLastResponseText(),
+      baselineMessageTextById: createMessageTextById(),
       lastText: "",
       startedAt: Date.now()
     };
@@ -674,9 +729,10 @@
       return;
     }
 
-    const text = getLastResponseText();
+    const snapshot = getLatestDeepSeekSnapshot(activeRun);
+    const text = snapshot?.text ?? "";
 
-    if (!text || text === activeRun.baselineText || text === activeRun.lastText) {
+    if (!text || text === activeRun.lastText) {
       return;
     }
 
@@ -686,6 +742,7 @@
       runId: activeRun.runId,
       prompt: activeRun.prompt,
       text,
+      html: snapshot?.html || "",
       message: text
     });
   }
@@ -760,7 +817,7 @@
       return false;
     }
 
-    if (message?.type === "HAI_MEETING_DEEPSEEK_SEND_PROMPT_V8") {
+    if (message?.type === "HAI_MEETING_DEEPSEEK_SEND_PROMPT_V9") {
       sendPrompt(message.prompt, message.runId)
         .then((result) => sendResponse({ ok: true, ...result }))
         .catch((error) => {

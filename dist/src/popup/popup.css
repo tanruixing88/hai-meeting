@@ -267,6 +267,8 @@ textarea:focus {
   margin-top: 0;
 }
 
+.result h1,
+.result h2,
 .result h3,
 .result h4,
 .result h5,
@@ -275,6 +277,17 @@ textarea:focus {
   color: #172026;
   font-size: 13px;
   line-height: 1.35;
+}
+
+.result h1,
+.result h2 {
+  font-size: 14px;
+}
+
+.result hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid #d8ded4;
 }
 
 .result ul,

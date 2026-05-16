@@ -277,6 +277,7 @@ function liveSnapshotToResult(snapshot) {
     return {
       ok: true,
       text: snapshot.text,
+      html: snapshot.html || "",
       runId: snapshot.runId
     };
   }
@@ -310,6 +311,7 @@ async function saveProviderLiveResult(providerId, snapshot) {
       runId: snapshot.runId,
       updatedAt: snapshot.updatedAt || new Date().toISOString(),
       message: snapshot.text || snapshot.message || "",
+      html: snapshot.html || "",
       result: liveSnapshotToResult(snapshot)
     }
   });
@@ -345,13 +347,13 @@ function renderProviderLiveSnapshot(providerId, snapshot) {
   }
 
   const formatted = formatProviderResult(liveSnapshotToResult(snapshot));
-  setResult(formatted.message, formatted.type);
+  setResult(formatted.message, formatted.type, formatted.html);
 }
 
 async function updateAllModelProviderResult(providerId, snapshot) {
   const result = liveSnapshotToResult(snapshot);
   const formatted = formatProviderResult(result);
-  setAllProviderResult(allProviderElements[providerId], formatted.message, formatted.type);
+  setAllProviderResult(allProviderElements[providerId], formatted.message, formatted.type, formatted.html);
 
   const stored = await chrome.storage.local.get("lastAllModelsResult");
   const previousResults = stored.lastAllModelsResult?.result?.results ?? {};
@@ -475,7 +477,7 @@ async function restoreLastProviderResult(storageKey, setResult) {
   }
 
   if (last.status === "success") {
-    setResult(last.message, "success");
+    setResult(last.message, "success", last.html || last.result?.html || "");
     return;
   }
 
@@ -490,23 +492,23 @@ async function restoreLastProviderResult(storageKey, setResult) {
   }
 }
 
-function setChatGPTResult(message, type = "") {
-  chatgptResult.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
+function setChatGPTResult(message, type = "", html = "") {
+  chatgptResult.innerHTML = type === "success" && html ? html : type === "success" ? markdownToHtml(message) : escapeHtml(message);
   chatgptResult.className = `result ${type}`.trim();
 }
 
-function setGeminiResult(message, type = "") {
-  geminiResult.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
+function setGeminiResult(message, type = "", html = "") {
+  geminiResult.innerHTML = type === "success" && html ? html : type === "success" ? markdownToHtml(message) : escapeHtml(message);
   geminiResult.className = `result ${type}`.trim();
 }
 
-function setDeepSeekResult(message, type = "") {
-  deepseekResult.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
+function setDeepSeekResult(message, type = "", html = "") {
+  deepseekResult.innerHTML = type === "success" && html ? html : type === "success" ? markdownToHtml(message) : escapeHtml(message);
   deepseekResult.className = `result ${type}`.trim();
 }
 
-function setAllProviderResult(element, message, type = "") {
-  element.innerHTML = type === "success" ? markdownToHtml(message) : escapeHtml(message);
+function setAllProviderResult(element, message, type = "", html = "") {
+  element.innerHTML = type === "success" && html ? html : type === "success" ? markdownToHtml(message) : escapeHtml(message);
   element.className = `result compact ${type}`.trim();
 }
 
@@ -528,7 +530,8 @@ function formatProviderResult(result) {
   if (result.ok) {
     return {
       message: result.text || "完成，但回复为空",
-      type: "success"
+      type: "success",
+      html: result.html || ""
     };
   }
 
@@ -580,9 +583,9 @@ function renderAllModelResults(results) {
   const gemini = formatProviderResult(results.gemini);
   const deepseek = formatProviderResult(results.deepseek);
 
-  setAllProviderResult(allChatGPTResult, chatgpt.message, chatgpt.type);
-  setAllProviderResult(allGeminiResult, gemini.message, gemini.type);
-  setAllProviderResult(allDeepSeekResult, deepseek.message, deepseek.type);
+  setAllProviderResult(allChatGPTResult, chatgpt.message, chatgpt.type, chatgpt.html);
+  setAllProviderResult(allGeminiResult, gemini.message, gemini.type, gemini.html);
+  setAllProviderResult(allDeepSeekResult, deepseek.message, deepseek.type, deepseek.html);
 }
 
 async function sendToProvider({
@@ -760,7 +763,7 @@ async function sendToAllModels(event) {
     Object.assign(results, mergedResults);
 
     const formatted = formatProviderResult(results[target.id]);
-    setAllProviderResult(target.element, formatted.message, formatted.type);
+    setAllProviderResult(target.element, formatted.message, formatted.type, formatted.html);
     await saveAllModelsResult(prompt, results);
   });
 
